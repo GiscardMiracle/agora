@@ -1,24 +1,12 @@
-# Nestjs specific
-/dist
-/node_modules
-/build
-/tmp
+# Python
+__pycache__/
+*.py[cod]
+.venv/
 
-# Logs
-logs
-*.log
-npm-debug.log*
-pnpm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
+# Agora runtime data (DB, logs, work dirs)
+/data/
 
-# dotenv environment variable files
+# env files
 .env
-.env.development
-.env.test
-.env.production
-
-# temp directory
-.temp
-.tmp
+.env.*
+!.env.example

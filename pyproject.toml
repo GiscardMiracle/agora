@@ -1,0 +1,14 @@
+[project]
+name = "agora"
+version = "0.1.0"
+description = "Lightweight test runner for student projects"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
+    "itsdangerous>=2.2",
+]
+
+[tool.uv]
+package = false
