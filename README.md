@@ -72,5 +72,5 @@ AGORA_PASSWORD=dev uv run uvicorn app.main:app --reload --port 8080
 
 ## Ressources
 
-Pensé pour un VPS 2 Go / 10 Go : 2 builds en parallèle × 512 Mo max, image sandbox ~770 Mo,
+Pensé pour un VPS 2 Go / 10 Go : 2 builds en parallèle × 512 Mo max, image sandbox ~1,15 Go (gcc + clang),
 clones supprimés après chaque build, 20 builds gardés par dépôt, logs plafonnés à 2 Mo.

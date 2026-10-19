@@ -4,7 +4,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      build-essential valgrind \
+      build-essential clang valgrind \
       libcriterion-dev libncurses-dev \
       python3 bc diffutils procps file less ca-certificates \
  && rm -rf /var/lib/apt/lists/*
