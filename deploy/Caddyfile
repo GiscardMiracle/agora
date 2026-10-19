@@ -1,0 +1,10 @@
+# /etc/caddy/Caddyfile — automatic HTTPS. Replace with your (sub)domain pointing to the VPS.
+agora.giscardadjanon.tech {
+	encode gzip
+	reverse_proxy 127.0.0.1:8080
+}
+
+# No domain? Use this block instead (plain HTTP on port 80, set AGORA_HTTPS=0):
+# :80 {
+# 	reverse_proxy 127.0.0.1:8080
+# }

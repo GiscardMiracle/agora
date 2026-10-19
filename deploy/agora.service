@@ -1,0 +1,17 @@
+[Unit]
+Description=Agora - test runner for student projects
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+User=agora
+Group=agora
+WorkingDirectory=/opt/agora
+EnvironmentFile=/opt/agora/.env
+# Exactly one process: the build workers live inside it.
+ExecStart=/opt/agora/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080 --proxy-headers --no-access-log
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
