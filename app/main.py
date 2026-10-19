@@ -412,6 +412,6 @@ app.include_router(api)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def index():
     return FileResponse(STATIC / "index.html")
