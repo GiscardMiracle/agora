@@ -6,7 +6,9 @@ DIR=/opt/agora
 [ "$(id -u)" -eq 0 ] || { echo "run with sudo"; exit 1; }
 
 apt-get update -qq
-apt-get install -y -qq git docker.io curl >/dev/null
+apt-get install -y -qq git curl openssl >/dev/null
+# Keep an existing Docker install (docker-ce and docker.io conflict).
+command -v docker >/dev/null || apt-get install -y -qq docker.io >/dev/null
 systemctl enable --now docker
 
 id agora >/dev/null 2>&1 || useradd --system --create-home --shell /bin/bash agora
