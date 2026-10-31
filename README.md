@@ -25,6 +25,9 @@ FastAPI (1 process) ── SQLite (data/agora.db)
     119 appels `my_printf` comparés octet par octet au vrai `printf`, retour et `%n` compris).
     Chaque test affiche l'appel C exact, la sortie attendue/obtenue façon `cat -e` et la valeur de retour.
     Ajouter un test = une ligne `CASE("section", my_printf(...))` dans `main.c`. Timeout conseillé : 180 s.
+  - [`examples/101pong/`](examples/101pong) : programme en langage libre (C/C++, Python, bash, ou tout ce que contient l'image).
+    Makefile si présent, `-h`, exemples du sujet, impact sur la raquette, précision, cas aléatoires, erreurs (exit 84, stderr).
+    Sorties attendues calculées par `ref.py`. Uploader `tests.sh` et `ref.py`. Timeout conseillé : 300 s.
   - [`examples/c-functions/`](examples/c-functions) : compile `main.c` avec des fichiers de l'étudiant (exercices de fonctions C).
 
 ## Liste de dépôts (upload `.txt` / `.csv` ou copier-coller)
@@ -39,6 +42,23 @@ github.com/my-org/day06-alan.turing
 
 Dépôts privés : soit `AGORA_GITHUB_TOKEN` (URLs https), soit une clé SSH de l'utilisateur `agora`
 ajoutée à ton compte GitHub (URLs `git@`).
+
+## Comptes
+
+Pas d'inscription : seul un admin crée les comptes (menu *utilisateurs*).
+
+| Rôle | Droits |
+|------|--------|
+| admin | tout, y compris les comptes |
+| correcteur | jobs, fichiers de test, dépôts, lancements |
+| lecteur | consultation seule (résultats, logs, fichiers de test) |
+
+Au premier démarrage, si aucun compte n'existe, l'admin est créé avec `AGORA_ADMIN_USER` (défaut `admin`) et `AGORA_PASSWORD`.
+Ces variables ne servent plus ensuite ; les comptes vivent dans la base.
+
+Mot de passe perdu : `cd /opt/agora && sudo -u agora .venv/bin/python -m app.users <nom>` (crée un admin si le nom n'existe pas).
+
+Un correcteur peut ajouter tout dépôt accessible au token ou à la clé SSH du serveur et en lire le contenu via les logs.
 
 ## Raccourcis
 
