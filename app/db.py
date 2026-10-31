@@ -50,6 +50,17 @@ CREATE TABLE IF NOT EXISTS builds (
 
 CREATE INDEX IF NOT EXISTS builds_repo ON builds(repo_id, id);
 CREATE INDEX IF NOT EXISTS builds_status ON builds(status, id);
+
+CREATE TABLE IF NOT EXISTS users (
+    id              INTEGER PRIMARY KEY,
+    username        TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash   TEXT NOT NULL,
+    role            TEXT NOT NULL CHECK (role IN ('admin', 'corrector', 'viewer')),
+    -- Bumped on password change: invalidates the sessions opened before it.
+    session_version INTEGER NOT NULL DEFAULT 0,
+    created_at      REAL NOT NULL,
+    last_login      REAL
+);
 """
 
 FINISHED = ("success", "failed", "timeout", "cancelled", "error")

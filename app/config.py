@@ -11,6 +11,8 @@ DB_PATH = DATA_DIR / "agora.db"
 LOGS_DIR = DATA_DIR / "logs"
 WORK_DIR = DATA_DIR / "work"
 
+# First admin account, created only while the users table is empty.
+ADMIN_USER = os.environ.get("AGORA_ADMIN_USER", "admin")
 PASSWORD = os.environ.get("AGORA_PASSWORD", "")
 SECRET = os.environ.get("AGORA_SECRET", "")
 GITHUB_TOKEN = os.environ.get("AGORA_GITHUB_TOKEN", "")

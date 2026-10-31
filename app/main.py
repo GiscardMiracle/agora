@@ -1,14 +1,14 @@
 import csv
-import hmac
 import io
 import logging
 import os
 import re
 import secrets
-import sys
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -16,13 +16,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import config, db, repos
+from . import config, db, repos, users
 from .runner import Runner, log_path, remove_logs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-
-if not config.PASSWORD:
-    sys.exit("AGORA_PASSWORD is not set. Refusing to start an unauthenticated code runner.")
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
 FILE_NAME_RE = re.compile(r"^[\w.+-]+(/[\w.+-]+)*$")
@@ -45,6 +42,7 @@ def _secret() -> str:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     db.init()
+    users.bootstrap()
     await runner.start()
     yield
     await runner.stop()
@@ -58,12 +56,36 @@ app.add_middleware(
 )
 
 
-def require_auth(request: Request) -> None:
-    if not request.session.get("auth"):
+def current_user(request: Request) -> dict | None:
+    uid = request.session.get("uid")
+    if uid is None:
+        return None
+    with db.tx() as c:
+        u = db.row(c, "SELECT id, username, role, session_version FROM users WHERE id=?", uid)
+    return u if u and u["session_version"] == request.session.get("sv") else None
+
+
+def require_auth(request: Request) -> dict:
+    user = current_user(request)
+    if not user:
         raise HTTPException(401, "not authenticated")
+    return user
 
 
-api = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
+def require_write(request: Request, user: dict = Depends(require_auth)) -> None:
+    """Viewers can read everything but change nothing."""
+    if request.method not in ("GET", "HEAD") and user["role"] == "viewer":
+        raise HTTPException(403, "read-only account")
+
+
+def require_admin(user: dict = Depends(require_auth)) -> dict:
+    if user["role"] != "admin":
+        raise HTTPException(403, "admin only")
+    return user
+
+
+api = APIRouter(prefix="/api", dependencies=[Depends(require_write)])
+admin = APIRouter(prefix="/api/users", dependencies=[Depends(require_admin)])
 public = APIRouter(prefix="/api")
 
 
@@ -108,15 +130,31 @@ def cancel_active(c, where: str, *args) -> list[int]:
 # ---------------- auth ----------------
 
 class Login(BaseModel):
+    username: str
     password: str
+
+
+def public_user(u: dict) -> dict:
+    return {"id": u["id"], "username": u["username"], "role": u["role"]}
+
+
+def open_session(request: Request, user_id: int, session_version: int) -> None:
+    request.session["uid"] = user_id
+    request.session["sv"] = session_version
 
 
 @public.post("/login")
 def login(body: Login, request: Request):
-    if not hmac.compare_digest(body.password.encode(), config.PASSWORD.encode()):
-        raise HTTPException(401, "wrong password")
-    request.session["auth"] = True
-    return {"ok": True}
+    with db.tx() as c:
+        u = db.row(c, "SELECT * FROM users WHERE username=?", body.username.strip())
+    # Hashing is slow on purpose: stay out of the write transaction meanwhile.
+    if not users.verify_password(body.password, u["password_hash"] if u else None):
+        raise HTTPException(401, "wrong username or password")
+    with db.tx() as c:
+        c.execute("UPDATE users SET last_login=? WHERE id=?", db.now(), u["id"])
+    request.session.clear()
+    open_session(request, u["id"], u["session_version"])
+    return public_user(u)
 
 
 @public.post("/logout")
@@ -127,7 +165,95 @@ def logout(request: Request):
 
 @public.get("/me")
 def me(request: Request):
-    return {"auth": bool(request.session.get("auth"))}
+    u = current_user(request)
+    return {"user": public_user(u) if u else None}
+
+
+class PasswordChange(BaseModel):
+    current: str
+    new: str = Field(min_length=users.MIN_PASSWORD, max_length=200)
+
+
+@public.post("/me/password")
+def change_password(body: PasswordChange, request: Request, user: dict = Depends(require_auth)):
+    with db.tx() as c:
+        stored = db.row(c, "SELECT password_hash FROM users WHERE id=?", user["id"])["password_hash"]
+    if not users.verify_password(body.current, stored):
+        raise HTTPException(400, "mot de passe actuel incorrect")
+    new_hash = users.hash_password(body.new)
+    with db.tx() as c:
+        c.execute(
+            "UPDATE users SET password_hash=?, session_version=session_version+1 WHERE id=?",
+            new_hash, user["id"],
+        )
+    # Other devices are logged out; this one stays connected.
+    open_session(request, user["id"], user["session_version"] + 1)
+    return {"ok": True}
+
+
+# ---------------- users (admin only) ----------------
+
+USERNAME = r"^[\w.@-]{2,60}$"
+Role = Literal["admin", "corrector", "viewer"]
+Password = Annotated[str, Field(min_length=users.MIN_PASSWORD, max_length=200)]
+
+
+class UserIn(BaseModel):
+    username: str = Field(pattern=USERNAME)
+    password: Password
+    role: Role
+
+
+class UserPatch(BaseModel):
+    role: Role | None = None
+    password: Password | None = None
+
+
+@admin.get("")
+def list_users():
+    with db.tx() as c:
+        return db.rows(c, "SELECT id, username, role, created_at, last_login FROM users ORDER BY username COLLATE NOCASE")
+
+
+@admin.post("")
+def create_user(body: UserIn):
+    password_hash = users.hash_password(body.password)
+    try:
+        with db.tx() as c:
+            cur = c.execute(
+                "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+                body.username, password_hash, body.role, db.now(),
+            )
+            return {"id": cur.lastrowid}
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, "ce nom d'utilisateur existe déjà")
+
+
+@admin.patch("/{user_id}")
+def update_user(user_id: int, body: UserPatch, me: dict = Depends(require_admin)):
+    # An admin cannot demote or delete themselves, so there is always at least one admin left.
+    if user_id == me["id"] and body.role not in (None, "admin"):
+        raise HTTPException(400, "tu ne peux pas changer ton propre rôle")
+    password_hash = users.hash_password(body.password) if body.password else None
+    with db.tx() as c:
+        get_or_404(c, "SELECT id FROM users WHERE id=?", user_id)
+        if body.role:
+            c.execute("UPDATE users SET role=? WHERE id=?", body.role, user_id)
+        if password_hash:
+            c.execute(
+                "UPDATE users SET password_hash=?, session_version=session_version+1 WHERE id=?",
+                password_hash, user_id,
+            )
+    return {"ok": True}
+
+
+@admin.delete("/{user_id}")
+def delete_user(user_id: int, me: dict = Depends(require_admin)):
+    if user_id == me["id"]:
+        raise HTTPException(400, "tu ne peux pas supprimer ton propre compte")
+    with db.tx() as c:
+        c.execute("DELETE FROM users WHERE id=?", user_id)
+    return {"ok": True}
 
 
 # ---------------- jobs ----------------
@@ -408,6 +534,7 @@ def export_csv(job_id: int):
 
 
 app.include_router(public)
+app.include_router(admin)
 app.include_router(api)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
