@@ -73,7 +73,8 @@ header.top {
 #nav a { color: var(--muted); }
 #nav a:hover { color: var(--text); text-decoration: none; }
 #nav .crumb { color: var(--green); overflow: hidden; text-overflow: ellipsis; }
-#nav #logout { margin-left: auto; }
+#nav .nav-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+body[data-role="viewer"] .w { display: none !important; }
 
 main { padding: 26px 28px 60px; max-width: 1440px; margin: 0 auto; }
 

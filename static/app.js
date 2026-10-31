@@ -5,6 +5,15 @@
 const $app = document.getElementById("app");
 const $nav = document.getElementById("nav");
 let cleanups = [];
+let ME = null;
+
+const canWrite = () => ME?.role !== "viewer";
+const ROLE_LABEL = { admin: "admin", corrector: "correcteur", viewer: "lecteur" };
+
+function setMe(user) {
+  ME = user;
+  document.body.dataset.role = user?.role || "";
+}
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -27,6 +36,7 @@ async function api(path, { method = "GET", json, form } = {}) {
   } else if (form) opts.body = form;
   const r = await fetch(`/api${path}`, opts);
   if (r.status === 401 && path !== "/login") {
+    setMe(null);
     location.hash = "#/login";
     throw new Unauthorized();
   }
@@ -127,6 +137,8 @@ function onKey(fn) {
 
 const routes = [
   [/^#\/login$/, viewLogin],
+  [/^#\/users$/, viewUsers],
+  [/^#\/account$/, viewAccount],
   [/^#\/jobs\/(\d+)(?:\/(\w+))?$/, viewJob],
   [/^#\/builds\/(\d+)$/, viewBuild],
   [/^#?\/?$/, viewJobs],
@@ -136,6 +148,10 @@ async function route() {
   cleanups.forEach((f) => f());
   cleanups = [];
   const h = location.hash || "#/";
+  if (!ME && h !== "#/login") {
+    setMe((await api("/me")).user);
+    if (!ME) { location.hash = "#/login"; return; }
+  }
   for (const [re, view] of routes) {
     const m = h.match(re);
     if (m) {
@@ -154,9 +170,15 @@ window.addEventListener("hashchange", route);
 route();
 
 function setNav(html) {
-  $nav.innerHTML = html + (location.hash === "#/login" ? "" : ` <button class="link" id="logout">déconnexion</button>`);
+  $nav.innerHTML = html + (!ME ? "" : `
+    <span class="nav-right">
+      ${ME.role === "admin" ? `<a href="#/users">utilisateurs</a>` : ""}
+      <a href="#/account" title="mon compte">${esc(ME.username)} <span class="chip">${ROLE_LABEL[ME.role]}</span></a>
+      <button class="link" id="logout">déconnexion</button>
+    </span>`);
   document.getElementById("logout")?.addEventListener("click", async () => {
     await api("/logout", { method: "POST" });
+    setMe(null);
     location.hash = "#/login";
   });
 }
@@ -170,20 +192,113 @@ async function viewLogin() {
       <pre class="ascii">${ASCII}</pre>
       <div class="muted small">évaluation des projets · soutenances</div>
       <div class="term-line"><span class="prompt">$</span> sudo agora --login<span class="cursor"></span></div>
+      <label>utilisateur :
+        <input name="username" autofocus autocomplete="username" required>
+      </label>
       <label>[sudo] mot de passe :
-        <input type="password" name="password" autofocus autocomplete="current-password">
+        <input type="password" name="password" autocomplete="current-password" required>
       </label>
       <button class="btn primary" style="justify-content:center">entrer ⏎</button>
     </form>`;
   document.getElementById("f").addEventListener("submit", async (e) => {
     e.preventDefault();
     try {
-      await api("/login", { method: "POST", json: { password: e.target.password.value } });
+      setMe(await api("/login", { method: "POST", json: { username: e.target.username.value, password: e.target.password.value } }));
       location.hash = "#/";
     } catch (err) {
       toast("Sorry, try again.", "ko");
       e.target.password.select();
     }
+  });
+}
+
+// ---------------------------------------------------------------- account
+
+async function viewAccount() {
+  setNav(`<a href="#/">jobs</a> <span class="sep">/</span> <span class="crumb">mon compte</span>`);
+  $app.innerHTML = `
+    <section class="head"><div><div class="eyebrow">~/compte</div><h1>${esc(ME.username)} <span class="chip">${ROLE_LABEL[ME.role]}</span></h1></div></section>
+    <form id="pw" class="card settings">
+      <label>Mot de passe actuel <input type="password" name="current" autocomplete="current-password" required></label>
+      <label>Nouveau mot de passe <span class="muted small">(8 caractères minimum)</span>
+        <input type="password" name="next" minlength="8" autocomplete="new-password" required></label>
+      <div class="toolbar"><button class="btn primary">changer le mot de passe</button></div>
+    </form>`;
+  document.getElementById("pw").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      await api("/me/password", { method: "POST", json: { current: e.target.current.value, new: e.target.next.value } });
+      e.target.reset();
+      toast("Mot de passe changé", "ok");
+    } catch (err) { toast(err.message, "ko"); }
+  });
+}
+
+// ---------------------------------------------------------------- users (admin)
+
+async function viewUsers() {
+  if (ME.role !== "admin") { location.hash = "#/"; return; }
+  setNav(`<a href="#/">jobs</a> <span class="sep">/</span> <span class="crumb">utilisateurs</span>`);
+  const list = await api("/users");
+  const roleOptions = (cur) => Object.entries(ROLE_LABEL).map(([k, l]) => `<option value="${k}" ${k === cur ? "selected" : ""}>${l}</option>`).join("");
+  $app.innerHTML = `
+    <section class="head"><div><div class="eyebrow">~/utilisateurs</div><h1>Utilisateurs <span class="muted">(${list.length})</span></h1>
+      <div class="muted small">admin : tout, comptes compris · correcteur : jobs, tests et lancements · lecteur : consultation seule</div></div></section>
+    <div class="tablewrap"><table class="repos">
+      <thead><tr><th>Utilisateur</th><th>Rôle</th><th>Dernière connexion</th><th></th></tr></thead>
+      <tbody>${list.map((u) => `
+        <tr data-user="${u.id}">
+          <td><div class="who">${avatar(u.username)}<div class="name">${esc(u.username)}${u.id === ME.id ? ` <span class="muted small">(toi)</span>` : ""}</div></div></td>
+          <td><select data-act="role" ${u.id === ME.id ? "disabled" : ""}>${roleOptions(u.role)}</select></td>
+          <td class="muted small">${u.last_login ? fmtDate(u.last_login) : "jamais"}</td>
+          <td class="actions">
+            ${u.id === ME.id ? "" : `<button class="btn" data-act="reset">mot de passe</button> <button class="icon danger" data-act="del" title="supprimer">✕</button>`}
+          </td>
+        </tr>`).join("")}</tbody>
+    </table></div>
+    <form id="new" class="card settings" style="margin-top:16px">
+      <div class="eyebrow">+ créer un compte</div>
+      <div class="row">
+        <label>Utilisateur <input name="username" pattern="[\\w.@\\-]{2,60}" autocomplete="off" required></label>
+        <label>Mot de passe <span class="muted small">(8 min.)</span> <input type="text" name="password" minlength="8" autocomplete="off" required></label>
+        <label>Rôle <select name="role">${roleOptions("corrector")}</select></label>
+      </div>
+      <div class="toolbar"><button class="btn primary">créer</button></div>
+    </form>`;
+  const userOf = (el) => list.find((u) => u.id == el.closest("tr").dataset.user);
+  $app.querySelector("tbody").addEventListener("change", async (e) => {
+    if (e.target.dataset.act !== "role") return;
+    try {
+      await api(`/users/${userOf(e.target).id}`, { method: "PATCH", json: { role: e.target.value } });
+      toast("Rôle modifié", "ok");
+    } catch (err) { toast(err.message, "ko"); }
+    route();
+  });
+  $app.querySelector("tbody").addEventListener("click", async (e) => {
+    const act = e.target.closest("button")?.dataset.act;
+    if (!act) return;
+    const u = userOf(e.target);
+    try {
+      if (act === "reset") {
+        const password = prompt(`Nouveau mot de passe pour ${u.username} (8 caractères minimum) :`);
+        if (!password) return;
+        await api(`/users/${u.id}`, { method: "PATCH", json: { password } });
+        toast("Mot de passe changé", "ok");
+      } else if (act === "del") {
+        if (!confirm(`Supprimer le compte ${u.username} ?`)) return;
+        await api(`/users/${u.id}`, { method: "DELETE" });
+        route();
+      }
+    } catch (err) { toast(err.message, "ko"); }
+  });
+  document.getElementById("new").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    try {
+      await api("/users", { method: "POST", json: { username: f.username.value.trim(), password: f.password.value, role: f.role.value } });
+      toast(`Compte ${f.username.value.trim()} créé`, "ok");
+      route();
+    } catch (err) { toast(err.message, "ko"); }
   });
 }
 
@@ -198,7 +313,7 @@ async function viewJobs() {
         <div class="eyebrow">~/jobs</div>
         <h1>Sets de tests <span class="muted">(${jobs.length})</span></h1>
       </div>
-      <form id="new" class="inline new-job">
+      <form id="new" class="inline new-job w">
         <input name="name" placeholder="nouveau job, ex: my_printf" required>
         <button class="btn primary">+ créer</button>
       </form>
@@ -230,7 +345,8 @@ async function viewJobs() {
 async function viewJob(id, tab = "repos") {
   const job = await api(`/jobs/${id}`);
   setNav(`<a href="#/">jobs</a> <span class="sep">/</span> <span class="crumb">${esc(job.name)}</span>`);
-  const tabs = [["repos", "Dépôts", job.repos.length], ["files", "Fichiers de test", job.files.length], ["settings", "Paramètres", null]];
+  const tabs = [["repos", "Dépôts", job.repos.length], ["files", "Fichiers de test", job.files.length]];
+  if (canWrite()) tabs.push(["settings", "Paramètres", null]);
   $app.innerHTML = `
     <section class="head">
       <div>
@@ -248,7 +364,7 @@ async function viewJob(id, tab = "repos") {
   if (tab !== "repos") every(3000, async () => renderStats((await api(`/jobs/${id}`)).repos));
   const el = document.getElementById("tab");
   if (tab === "files") return tabFiles(job, el);
-  if (tab === "settings") return tabSettings(job, el);
+  if (tab === "settings" && canWrite()) return tabSettings(job, el);
   return tabRepos(job, el);
 }
 
@@ -271,8 +387,8 @@ function renderStats(repos) {
 function tabRepos(job, el) {
   el.innerHTML = `
     <div class="toolbar">
-      <button class="btn primary" data-act="run-all">▶ tout lancer</button>
-      <button class="btn" data-act="cancel-all">■ tout annuler</button>
+      <button class="btn primary w" data-act="run-all">▶ tout lancer</button>
+      <button class="btn w" data-act="cancel-all">■ tout annuler</button>
       <a class="btn" href="/api/jobs/${job.id}/export.csv">⤓ csv</a>
       <input id="filter" placeholder="⌕ filtrer…  ( / )" class="grow">
     </div>
@@ -280,7 +396,7 @@ function tabRepos(job, el) {
       <thead><tr><th>Étudiant</th><th>Statut</th><th>Score</th><th>Commit</th><th>Durée</th><th>Date</th><th></th></tr></thead>
       <tbody id="rows"></tbody>
     </table></div>
-    <details class="card add" ${job.repos.length ? "" : "open"}>
+    <details class="card add w" ${job.repos.length ? "" : "open"}>
       <summary>+ ajouter des dépôts</summary>
       <form id="add">
         <p class="muted small">Un dépôt par ligne (fichier .txt / .csv ou collé ci-dessous). Les autres mots de la ligne deviennent le nom affiché.<br>
@@ -308,7 +424,7 @@ function tabRepos(job, el) {
         <td class="sha">${r.commit_sha ? r.commit_sha.slice(0, 7) : ""}</td>
         <td class="small">${fmtDur(r)}</td>
         <td class="muted small">${fmtDate(r.finished_at || r.started_at || r.queued_at)}</td>
-        <td class="actions">
+        <td class="actions w">
           ${isActive(r.status)
             ? `<button class="icon" data-act="cancel" title="annuler">■</button>`
             : `<button class="icon" data-act="run" title="lancer">▶</button>`}
@@ -382,15 +498,15 @@ function tabFiles(job, el) {
     <div class="files">
       <aside class="card">
         <ul id="flist"></ul>
-        <form id="newfile" class="inline"><input name="name" placeholder="nouveau fichier (ex: tests.sh)" required><button class="btn">+</button></form>
-        <label class="btn upload">⤒ uploader des fichiers<input type="file" id="up" multiple hidden></label>
+        <form id="newfile" class="inline w"><input name="name" placeholder="nouveau fichier (ex: tests.sh)" required><button class="btn">+</button></form>
+        <label class="btn upload w">⤒ uploader des fichiers<input type="file" id="up" multiple hidden></label>
         <p class="muted small">Montés en lecture seule dans <code>/tests</code>. Le dépôt de l'étudiant est dans <code>/work</code> (dossier courant).
         Affiche <code>AGORA_SCORE: 7/10</code> pour remplir la colonne score.</p>
       </aside>
       <section class="card editor">
         <div class="toolbar"><span id="fname" class="muted">← choisis un fichier</span><span class="grow"></span>
-          <button class="btn primary" id="save" disabled>enregistrer (ctrl+s)</button>
-          <button class="btn danger" id="delf" disabled>supprimer</button></div>
+          <button class="btn primary w" id="save" disabled>enregistrer (ctrl+s)</button>
+          <button class="btn danger w" id="delf" disabled>supprimer</button></div>
         <textarea id="content" spellcheck="false" disabled></textarea>
       </section>
     </div>`;
@@ -414,13 +530,14 @@ function tabFiles(job, el) {
     document.getElementById("fname").textContent = name;
     ta.value = f.binary ? "(fichier binaire — non éditable)" : f.content;
     ta.disabled = f.binary;
+    ta.readOnly = !canWrite();
     save.disabled = f.binary;
     delf.disabled = false;
     renderList();
   };
 
   const doSave = async () => {
-    if (!current || ta.disabled) return;
+    if (!current || ta.disabled || !canWrite()) return;
     await api(`/jobs/${job.id}/files/${encodeURI(current)}`, { method: "PUT", json: { content: ta.value } });
     dirty = false;
     toast(`${current} enregistré`, "ok");
@@ -536,8 +653,8 @@ async function viewBuild(id) {
         <div class="muted small" id="meta"></div>
       </div>
       <button class="btn" data-go="${prev?.build_id || ""}" ${prev ? "" : "disabled"} title="précédent">← <span class="kbd">←</span></button>
-      <button class="btn primary" id="rerun" title="relancer">↻ relancer <span class="kbd" style="color:inherit;border-color:currentColor">r</span></button>
-      <button class="btn danger" id="cancel">■ annuler</button>
+      <button class="btn primary w" id="rerun" title="relancer">↻ relancer <span class="kbd" style="color:inherit;border-color:currentColor">r</span></button>
+      <button class="btn danger w" id="cancel">■ annuler</button>
       <button class="btn" data-go="${next?.build_id || ""}" ${next ? "" : "disabled"} title="suivant"><span class="kbd">→</span> →</button>
     </section>
     <div class="build">
@@ -633,6 +750,6 @@ async function viewBuild(id) {
   onKey((e) => {
     if (e.key === "ArrowLeft" && prev) location.hash = `#/builds/${prev.build_id}`;
     else if (e.key === "ArrowRight" && next) location.hash = `#/builds/${next.build_id}`;
-    else if (e.key === "r") rerun();
+    else if (e.key === "r" && canWrite()) rerun();
   });
 }
