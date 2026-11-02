@@ -9,6 +9,10 @@ RUN apt-get update \
       python3 bc diffutils procps file less ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
+# Tests run under the host uid, unknown here: tests may register it so getpwuid/getgrgid find a name.
+# The container is thrown away after each run.
+RUN chmod 666 /etc/passwd /etc/group
+
 # Uncomment for graphical projects (adds ~300 MB):
 # RUN apt-get update && apt-get install -y --no-install-recommends libcsfml-dev && rm -rf /var/lib/apt/lists/*
 
