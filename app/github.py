@@ -59,20 +59,33 @@ def matches(name: str, pattern: str) -> bool:
 
 
 def list_repos(owner: str, pattern: str) -> list[str]:
-    """Names of the repositories of `owner` (organisation or user) matching the pattern."""
+    """Names of the repositories of `owner` (organisation or user) matching the pattern.
+
+    Two sources are merged: the organisation's own listing (members see private repos there) and the
+    caller's repositories (collaborators only see the repos they were invited to there).
+    """
     if not ORG_RE.match(owner):
         raise GitHubError("Invalid organization name.")
     matches("", pattern)  # validates a regex early
+    names: set[str] = set()
     try:
-        found = list(_paginate(f"/orgs/{owner}/repos", {"type": "all"}, 50))
+        names |= {r["name"] for r in _paginate(f"/orgs/{owner}/repos", {"type": "all"}, 100)}
     except urllib.error.HTTPError as e:
         if e.code != 404:
             raise GitHubError(f"GitHub error {e.code}.")
-        try:
-            found = list(_paginate(f"/users/{owner}/repos", {"type": "owner"}, 50))
+        try:  # not an organisation: a plain user account
+            names |= {r["name"] for r in _paginate(f"/users/{owner}/repos", {"type": "owner"}, 100)}
         except urllib.error.HTTPError:
-            raise GitHubError(f"Organization \"{owner}\" not found (or the token cannot access it).")
-    return sorted(r["name"] for r in found if matches(r["name"], pattern))
+            pass
+    try:
+        mine = _paginate("/user/repos", {"affiliation": "owner,collaborator,organization_member"}, 100)
+        names |= {r["name"] for r in mine if (r.get("owner") or {}).get("login", "").lower() == owner.lower()}
+    except urllib.error.HTTPError as e:
+        raise GitHubError(f"GitHub error {e.code}.")
+    if not names:
+        raise GitHubError(f'No repository of "{owner}" is visible to the GitHub token (wrong organization name, '
+                          "or the token cannot access it: use a classic token with the repo scope).")
+    return sorted(n for n in names if matches(n, pattern))
 
 
 def _wanted(email: str) -> bool:
