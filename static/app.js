@@ -5,10 +5,47 @@
 const $app = document.getElementById("app");
 const $nav = document.getElementById("nav");
 let cleanups = [];
+
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("agora-theme", next); } catch {}
+  renderSidebar();
+}
+
+const ICONS = {
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  chev: '<path d="m9 6 6 6-6 6"/>',
+  job: '<path d="M8 4h8l4 4v12H8z"/><path d="M4 8v12h4"/>',
+  play: '<path d="M7 5v14l12-7z"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
+  pencil: '<path d="M4 20h4L19 9l-4-4L4 16z"/>',
+  trash: '<path d="M5 7h14M10 7V5h4v2M7 7l1 13h8l1-13"/>',
+  down: '<path d="M12 4v11m-5-4 5 5 5-5M5 20h14"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.3-5 6.5-5s5.700 1.500 6.500 5M16 5a3.500 3.500 0 0 1 0 7M18 15c2 .6 3.200 2.200 3.500 5"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.500 1.500M17.500 17.500 19 19M19 5l-1.500 1.500M6.500 17.500 5 19"/>',
+  moon: '<path d="M20 14.500A8 8 0 0 1 9.500 4 8 8 0 1 0 20 14.500z"/>',
+  out: '<path d="M10 4H5v16h5M15 8l4 4-4 4M19 12H9"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  redo: '<path d="M20 5v5h-5M20 10a8 8 0 1 0 1 5"/>',
+  back: '<path d="m15 6-6 6 6 6"/>',
+  fwd: '<path d="m9 6 6 6-6 6"/>',
+  reset: '<path d="M4 5v5h5M4 10a8 8 0 1 1-1 5"/>',
+};
+const ico = (n, size = 16) => `<svg class="i" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n]}</svg>`;
+const LOGO = `<svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="9" height="9" rx="2"/><rect x="13" y="2" width="9" height="9" rx="2" class="dim"/><rect x="2" y="13" width="9" height="9" rx="2" class="dim"/><rect x="13" y="13" width="9" height="9" rx="2" class="hot"/></svg>`;
+document.getElementById("burger").innerHTML = ico("menu", 18);
+document.getElementById("burger").addEventListener("click", () => document.body.classList.toggle("nav-open"));
+document.addEventListener("click", (e) => {
+  if (document.body.classList.contains("nav-open") && !e.target.closest("#side, #burger")) document.body.classList.remove("nav-open");
+});
+
 let ME = null;
 
 const canWrite = () => ME?.role !== "viewer";
-const ROLE_LABEL = { admin: "admin", corrector: "correcteur", viewer: "lecteur" };
+const ROLE_LABEL = { admin: "admin", corrector: "corrector", viewer: "viewer" };
 
 function setMe(user) {
   ME = user;
@@ -56,8 +93,8 @@ function fmtDate(ts) {
   const d = new Date(ts * 1000);
   const today = new Date().toDateString() === d.toDateString();
   return today
-    ? d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-    : d.toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    ? d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    : d.toLocaleString("en-GB", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
 function fmtDur(b) {
@@ -67,10 +104,10 @@ function fmtDur(b) {
 }
 
 const STATUS_LABEL = {
-  queued: "en attente", running: "en cours", success: "ok", failed: "échec",
-  timeout: "timeout", cancelled: "annulé", error: "erreur",
+  queued: "queued", running: "running", success: "passed", failed: "failed",
+  timeout: "timeout", cancelled: "cancelled", error: "error",
 };
-const badge = (s) => `<span class="badge s-${s || "none"}"><i></i>${s ? STATUS_LABEL[s] || s : "jamais lancé"}</span>`;
+const badge = (s) => `<span class="badge s-${s || "none"}"><i></i>${s ? STATUS_LABEL[s] || s : "never run"}</span>`;
 const isActive = (s) => s === "queued" || s === "running";
 const isKo = (s) => s === "failed" || s === "timeout" || s === "error";
 const shortRepo = (url) => url.replace(/^(https:\/\/github\.com\/|git@github\.com:)/, "").replace(/\.git$/, "");
@@ -104,14 +141,6 @@ function stackBar(ok, ko, run, total) {
   return `<div class="stack"><span class="ok" style="width:${w(ok)}%"></span><span class="ko" style="width:${w(ko)}%"></span><span class="run" style="width:${w(run)}%"></span></div>`;
 }
 
-const ASCII = String.raw`
- █████╗  ██████╗  ██████╗ ██████╗  █████╗
-██╔══██╗██╔════╝ ██╔═══██╗██╔══██╗██╔══██╗
-███████║██║  ███╗██║   ██║██████╔╝███████║
-██╔══██║██║   ██║██║   ██║██╔══██╗██╔══██║
-██║  ██║╚██████╔╝╚██████╔╝██║  ██║██║  ██║
-╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝`.slice(1);
-
 function every(ms, fn) {
   let stop = false;
   (async () => {
@@ -139,6 +168,7 @@ const routes = [
   [/^#\/login$/, viewLogin],
   [/^#\/users$/, viewUsers],
   [/^#\/account$/, viewAccount],
+  [/^#\/f\/(.+)$/, viewJobs],
   [/^#\/jobs\/(\d+)(?:\/(\w+))?$/, viewJob],
   [/^#\/builds\/(\d+)$/, viewBuild],
   [/^#?\/?$/, viewJobs],
@@ -152,13 +182,15 @@ async function route() {
     setMe((await api("/me")).user);
     if (!ME) { location.hash = "#/login"; return; }
   }
+  document.body.classList.toggle("auth", h === "#/login");
+  if (h !== "#/login") renderSidebar();
   for (const [re, view] of routes) {
     const m = h.match(re);
     if (m) {
       try {
         await view(...m.slice(1));
       } catch (e) {
-        if (!(e instanceof Unauthorized)) $app.innerHTML = `<p class="err">Erreur : ${esc(e.message)}</p>`;
+        if (!(e instanceof Unauthorized)) $app.innerHTML = `<p class="err">Error: ${esc(e.message)}</p>`;
       }
       return;
     }
@@ -170,43 +202,160 @@ window.addEventListener("hashchange", route);
 route();
 
 function setNav(html) {
-  $nav.innerHTML = html + (!ME ? "" : `
-    <span class="nav-right">
-      ${ME.role === "admin" ? `<a href="#/users">utilisateurs</a>` : ""}
-      <a href="#/account" title="mon compte">${esc(ME.username)} <span class="chip">${ROLE_LABEL[ME.role]}</span></a>
-      <button class="link" id="logout">déconnexion</button>
-    </span>`);
-  document.getElementById("logout")?.addEventListener("click", async () => {
+  $nav.innerHTML = html;
+}
+
+// ---------------------------------------------------------------- sidebar
+
+let TREE = { jobs: [], folders: [] };
+const openSet = (() => {
+  try { return new Set(JSON.parse(localStorage.getItem("agora-open") || "[]")); } catch { return new Set(); }
+})();
+const saveOpen = () => { try { localStorage.setItem("agora-open", JSON.stringify([...openSet])); } catch {} };
+
+function jobDot(j) {
+  const k = j.active ? "running" : j.ko ? "failed" : j.repo_count && j.ok === j.repo_count ? "success" : "";
+  return `<i class="dot ${k ? "d-" + k : ""}"></i>`;
+}
+
+function currentDir() {
+  const h = location.hash;
+  let m = h.match(/^#\/f\/(.+)$/);
+  if (m) return { dir: decodeURIComponent(m[1]), jobId: null };
+  m = h.match(/^#\/jobs\/(\d+)/);
+  if (m) {
+    const j = TREE.jobs.find((x) => x.id == m[1]);
+    return { dir: j?.folder || "", jobId: +m[1] };
+  }
+  return { dir: "", jobId: null };
+}
+
+function treeHtml(prefix, depth, cur) {
+  const subs = [...new Set(TREE.folders.filter((p) => p.startsWith(prefix) && p !== prefix.slice(0, -1)).map((p) => p.slice(prefix.length).split("/")[0]))]
+    .sort((x, y) => x.localeCompare(y, "fr", { sensitivity: "base" }));
+  const inside = (p, base) => p === base || p.startsWith(base + "/");
+  let out = "";
+  for (const n of subs) {
+    const full = prefix + n;
+    const open = openSet.has(full) || inside(cur.dir, full);
+    const count = TREE.jobs.filter((j) => inside(j.folder || "", full)).length;
+    out += `<div class="tn folder ${open ? "open" : ""} ${cur.dir === full && !cur.jobId ? "on" : ""}" style="--d:${depth}">
+      <button class="tw" data-toggle="${esc(full)}" aria-label="expand">${ico("chev", 12)}</button>
+      <a class="nm" href="#/f/${encodeURIComponent(full)}" style="display:flex;align-items:center;gap:7px;color:inherit;text-decoration:none"><span class="fi">${ico("folder", 15)}</span><span class="nm">${esc(n)}</span></a>
+      <span class="cnt">${count}</span></div>`;
+    if (open) out += treeHtml(full + "/", depth + 1, cur);
+  }
+  for (const j of TREE.jobs.filter((j) => (j.folder || "") === prefix.slice(0, -1)).sort((a, b) => a.name.localeCompare(b.name, "fr", { sensitivity: "base" }))) {
+    out += `<a class="tn job ${cur.jobId === j.id ? "on" : ""}" style="--d:${depth}" href="#/jobs/${j.id}">${jobDot(j)}<span class="nm">${esc(j.name)}</span></a>`;
+  }
+  return out;
+}
+
+async function renderSidebar() {
+  const side = document.getElementById("side");
+  if (!ME) { side.innerHTML = ""; return; }
+  try {
+    const [jobs, folders, me] = await Promise.all([api("/jobs"), api("/folders"), api("/me")]);
+    TREE = { jobs, folders };
+    if (me.user) ME = { ...ME, ...me.user };
+  } catch (e) { if (e instanceof Unauthorized) return; }
+  const cur = currentDir();
+  const light = document.documentElement.dataset.theme === "light";
+  const path = location.hash;
+  const quota = ME.role === "admin" ? "" : (() => {
+    const used = ME.launch_count ?? 0, max = ME.launch_limit ?? 0, left = max - used;
+    const cls = left <= 0 ? "out" : left <= 3 ? "low" : "";
+    return `<div class="quota ${cls}"><div style="display:flex;justify-content:space-between"><span>lancements</span><span>${used} / ${max}</span></div><div class="bar"><b style="width:${max ? Math.min(100, (100 * used) / max) : 100}%"></b></div></div>`;
+  })();
+  side.innerHTML = `
+    <a href="#/" class="brand">${LOGO}agora</a>
+    <div class="side-label"><span>jobs</span></div>
+    <div class="tree" id="tree">
+      <a class="tn ${path === "#/" || path === "" ? "on" : ""}" href="#/" style="--d:0"><span class="fi">${ico("job", 15)}</span><span class="nm">All jobs</span><span class="cnt">${TREE.jobs.length}</span></a>
+      ${treeHtml("", 0, cur)}
+    </div>
+    <div class="me">
+      ${quota}
+      <div class="me-top">${avatar(ME.username)}<div class="who-n"><b>${esc(ME.username)}</b><span>${ROLE_LABEL[ME.role]}</span></div></div>
+      <div class="me-actions">
+        <a class="ghost ${path === "#/account" ? "on" : ""}" href="#/account">${ico("user", 15)}Account</a>
+        ${ME.role === "admin" ? `<a class="ghost ${path === "#/users" ? "on" : ""}" href="#/users">${ico("users", 15)}Users</a>` : ""}
+        <button class="ghost" id="theme-btn" title="toggle theme">${ico(light ? "moon" : "sun", 15)}${light ? "Dark" : "Light"}</button>
+        <button class="ghost" id="logout">${ico("out", 15)}Sign out</button>
+      </div>
+    </div>`;
+  document.getElementById("theme-btn").addEventListener("click", toggleTheme);
+  document.getElementById("logout").addEventListener("click", async () => {
     await api("/logout", { method: "POST" });
     setMe(null);
     location.hash = "#/login";
   });
+  document.getElementById("tree").addEventListener("click", (e) => {
+    const t = e.target.closest("[data-toggle]");
+    if (!t) return;
+    e.preventDefault();
+    const p = t.dataset.toggle;
+    openSet.has(p) ? openSet.delete(p) : openSet.add(p);
+    saveOpen();
+    renderSidebar();
+  });
+  document.body.classList.remove("nav-open");
 }
 
 // ---------------------------------------------------------------- login
 
+function resultField() {
+  // Demo grid: one cell per repository, like on a job page.
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
+  const cols = 18, rows = 10;
+  const cells = [];
+  for (let i = 0; i < cols * rows; i++) {
+    const r = rnd();
+    cells.push(r < .6 ? "success" : r < .78 ? "failed" : r < .84 ? "running" : r < .88 ? "queued" : "none");
+  }
+  return `<div class="field" style="--cols:${cols}" aria-hidden="true">${cells.map((c, n) => `<span class="cell c-${c}" style="--n:${n}"></span>`).join("")}</div>`;
+}
+
 async function viewLogin() {
   setNav("");
+  const light = document.documentElement.dataset.theme === "light";
   $app.innerHTML = `
-    <form class="login card" id="f">
-      <pre class="ascii">${ASCII}</pre>
-      <div class="muted small">évaluation des projets · soutenances</div>
-      <div class="term-line"><span class="prompt">$</span> sudo agora --login<span class="cursor"></span></div>
-      <label>utilisateur :
-        <input name="username" autofocus autocomplete="username" required>
-      </label>
-      <label>[sudo] mot de passe :
-        <input type="password" name="password" autocomplete="current-password" required>
-      </label>
-      <button class="btn primary" style="justify-content:center">entrer ⏎</button>
-    </form>`;
+    <div class="login-wrap">
+      <section class="stage">
+        <a class="brand" href="#/login">${LOGO}agora</a>
+        <div>
+          <h2>One job, every repository, one board.</h2>
+          <p>Agora clones every submission, runs your tests in an isolated sandbox and files the results by job.</p>
+        </div>
+        ${resultField()}
+        <div>
+          <div class="legend">
+            <span><i class="cell c-success"></i>passed</span><span><i class="cell c-failed"></i>failed</span>
+            <span><i class="cell c-running"></i>running</span><span><i class="cell c-queued"></i>queued</span><span><i class="cell c-none"></i>never run</span>
+          </div>
+          <div class="stage-foot" style="margin-top:14px">sandbox · --network none · 512 MB · 60 s</div>
+        </div>
+      </section>
+      <section class="login-side">
+        <button class="ghost login-theme" id="lt" title="toggle theme">${ico(light ? "moon" : "sun", 15)}</button>
+        <form class="login" id="f">
+          <div><div class="eyebrow">restricted access</div><h1>Sign in</h1></div>
+          <label for="u">Username<input id="u" name="username" autofocus autocomplete="username" required></label>
+          <label for="p">Password<input id="p" type="password" name="password" autocomplete="current-password" required></label>
+          <button class="btn primary">Sign in</button>
+          <div class="hint">Accounts are created by the administrator.</div>
+        </form>
+      </section>
+    </div>`;
+  document.getElementById("lt").addEventListener("click", () => { toggleTheme(); viewLogin(); });
   document.getElementById("f").addEventListener("submit", async (e) => {
     e.preventDefault();
     try {
       setMe(await api("/login", { method: "POST", json: { username: e.target.username.value, password: e.target.password.value } }));
       location.hash = "#/";
     } catch (err) {
-      toast("Sorry, try again.", "ko");
+      toast("Wrong username or password.", "ko");
       e.target.password.select();
     }
   });
@@ -215,21 +364,51 @@ async function viewLogin() {
 // ---------------------------------------------------------------- account
 
 async function viewAccount() {
-  setNav(`<a href="#/">jobs</a> <span class="sep">/</span> <span class="crumb">mon compte</span>`);
+  setNav(`<a href="#/">jobs</a> <span class="sep">/</span> <span class="crumb">account</span>`);
   $app.innerHTML = `
-    <section class="head"><div><div class="eyebrow">~/compte</div><h1>${esc(ME.username)} <span class="chip">${ROLE_LABEL[ME.role]}</span></h1></div></section>
+    <section class="head"><div><div class="eyebrow">compte</div><h1>${esc(ME.username)} <span class="chip">${ROLE_LABEL[ME.role]}</span></h1></div></section>
+    <section id="ssh" class="card settings">
+      <div class="eyebrow">SSH key</div>
+      <p class="muted small">This key is used to clone repositories when you launch a job. The private key stays on the server;
+        add the public key in GitHub → Settings → SSH and GPG keys.</p>
+      <div id="sshbody"></div>
+    </section>
+    ${ME.role === "admin" ? "" : `<div class="muted small" style="margin:8px 0">Launches used: <b>${ME.launch_count ?? 0} / ${ME.launch_limit ?? 0}</b></div>`}
     <form id="pw" class="card settings">
-      <label>Mot de passe actuel <input type="password" name="current" autocomplete="current-password" required></label>
-      <label>Nouveau mot de passe <span class="muted small">(8 caractères minimum)</span>
+      <label>Current password <input type="password" name="current" autocomplete="current-password" required></label>
+      <label>New password <span class="muted small">(8 characters minimum)</span>
         <input type="password" name="next" minlength="8" autocomplete="new-password" required></label>
-      <div class="toolbar"><button class="btn primary">changer le mot de passe</button></div>
+      <div class="toolbar"><button class="btn primary">change password</button></div>
     </form>`;
+  const renderKey = async () => {
+    const k = await api("/me/ssh-key");
+    setMe({ ...ME, has_key: k.has_key });
+    document.getElementById("sshbody").innerHTML = k.has_key
+      ? `<textarea readonly rows="3" style="width:100%" id="pub">${esc(k.public_key)}</textarea>
+         <div class="toolbar"><button class="btn" data-act="copy">copy</button>
+         <button class="btn" data-act="regen">regenerate</button>
+         <button class="btn danger" data-act="del">delete</button></div>`
+      : `<div class="toolbar"><span class="muted small">No key: you cannot launch jobs.</span>
+         <button class="btn primary" data-act="gen">generate my key</button></div>`;
+  };
+  document.getElementById("sshbody").addEventListener("click", async (e) => {
+    const act = e.target.closest("button")?.dataset.act;
+    if (!act) return;
+    try {
+      if (act === "copy") { await navigator.clipboard.writeText(document.getElementById("pub").value); toast("Copied", "ok"); return; }
+      if (act === "regen" && !confirm("The old key will stop working. Continue?")) return;
+      if (act === "del" && !confirm("Delete your key? You will no longer be able to launch jobs.")) return;
+      await api("/me/ssh-key", { method: act === "del" ? "DELETE" : "POST" });
+      await renderKey();
+    } catch (err) { toast(err.message, "ko"); }
+  });
+  renderKey().catch((err) => toast(err.message, "ko"));
   document.getElementById("pw").addEventListener("submit", async (e) => {
     e.preventDefault();
     try {
       await api("/me/password", { method: "POST", json: { current: e.target.current.value, new: e.target.next.value } });
       e.target.reset();
-      toast("Mot de passe changé", "ok");
+      toast("Password changed", "ok");
     } catch (err) { toast(err.message, "ko"); }
   });
 }
@@ -238,39 +417,43 @@ async function viewAccount() {
 
 async function viewUsers() {
   if (ME.role !== "admin") { location.hash = "#/"; return; }
-  setNav(`<a href="#/">jobs</a> <span class="sep">/</span> <span class="crumb">utilisateurs</span>`);
+  setNav(`<a href="#/">jobs</a> <span class="sep">/</span> <span class="crumb">users</span>`);
   const list = await api("/users");
   const roleOptions = (cur) => Object.entries(ROLE_LABEL).map(([k, l]) => `<option value="${k}" ${k === cur ? "selected" : ""}>${l}</option>`).join("");
   $app.innerHTML = `
-    <section class="head"><div><div class="eyebrow">~/utilisateurs</div><h1>Utilisateurs <span class="muted">(${list.length})</span></h1>
-      <div class="muted small">admin : tout, comptes compris · correcteur : jobs, tests et lancements · lecteur : consultation seule</div></div></section>
+    <section class="head"><div><div class="eyebrow">administration</div><h1>Users <span class="muted">(${list.length})</span></h1>
+      <div class="muted small">admin: everything, accounts included · corrector: jobs, tests and launches · viewer: read-only</div></div></section>
     <div class="tablewrap"><table class="repos">
-      <thead><tr><th>Utilisateur</th><th>Rôle</th><th>Dernière connexion</th><th></th></tr></thead>
+      <thead><tr><th>User</th><th>Role</th><th>Launches</th><th>Key</th><th>Last sign-in</th><th></th></tr></thead>
       <tbody>${list.map((u) => `
         <tr data-user="${u.id}">
-          <td><div class="who">${avatar(u.username)}<div class="name">${esc(u.username)}${u.id === ME.id ? ` <span class="muted small">(toi)</span>` : ""}</div></div></td>
+          <td><div class="who">${avatar(u.username)}<div class="name">${esc(u.username)}${u.id === ME.id ? ` <span class="muted small">(you)</span>` : ""}</div></div></td>
           <td><select data-act="role" ${u.id === ME.id ? "disabled" : ""}>${roleOptions(u.role)}</select></td>
-          <td class="muted small">${u.last_login ? fmtDate(u.last_login) : "jamais"}</td>
+          <td>${u.role === "admin" ? `<span class="muted small">unlimited</span>` : `${u.launch_count} / <input data-act="limit" type="number" min="0" value="${u.launch_limit}" style="width:5em"> <button class="icon" data-act="resetcount" title="reset the counter to 0">${ico("reset", 14)}</button>`}</td>
+          <td class="muted small">${u.has_key ? "✔" : "—"}</td>
+          <td class="muted small">${u.last_login ? fmtDate(u.last_login) : "never"}</td>
           <td class="actions">
-            ${u.id === ME.id ? "" : `<button class="btn" data-act="reset">mot de passe</button> <button class="icon danger" data-act="del" title="supprimer">✕</button>`}
+            ${u.id === ME.id ? "" : `<button class="btn" data-act="reset">password</button> <button class="icon danger" data-act="del" title="delete">${ico("trash", 15)}</button>`}
           </td>
         </tr>`).join("")}</tbody>
     </table></div>
     <form id="new" class="card settings" style="margin-top:16px">
-      <div class="eyebrow">+ créer un compte</div>
+      <div class="eyebrow">+ create an account</div>
       <div class="row">
-        <label>Utilisateur <input name="username" pattern="[\\w.@\\-]{2,60}" autocomplete="off" required></label>
-        <label>Mot de passe <span class="muted small">(8 min.)</span> <input type="text" name="password" minlength="8" autocomplete="off" required></label>
-        <label>Rôle <select name="role">${roleOptions("corrector")}</select></label>
+        <label>Username <input name="username" pattern="[\\w.@\\-]{2,60}" autocomplete="off" required></label>
+        <label>Password <span class="muted small">(8 min.)</span> <input type="text" name="password" minlength="8" autocomplete="off" required></label>
+        <label>Role <select name="role">${roleOptions("corrector")}</select></label>
       </div>
-      <div class="toolbar"><button class="btn primary">créer</button></div>
+      <div class="toolbar"><button class="btn primary">create</button></div>
     </form>`;
   const userOf = (el) => list.find((u) => u.id == el.closest("tr").dataset.user);
   $app.querySelector("tbody").addEventListener("change", async (e) => {
-    if (e.target.dataset.act !== "role") return;
+    const kind = e.target.dataset.act;
+    if (kind !== "role" && kind !== "limit") return;
     try {
-      await api(`/users/${userOf(e.target).id}`, { method: "PATCH", json: { role: e.target.value } });
-      toast("Rôle modifié", "ok");
+      const json = kind === "role" ? { role: e.target.value } : { launch_limit: Number(e.target.value) };
+      await api(`/users/${userOf(e.target).id}`, { method: "PATCH", json });
+      toast(kind === "role" ? "Role updated" : "Limit updated", "ok");
     } catch (err) { toast(err.message, "ko"); }
     route();
   });
@@ -279,13 +462,17 @@ async function viewUsers() {
     if (!act) return;
     const u = userOf(e.target);
     try {
-      if (act === "reset") {
-        const password = prompt(`Nouveau mot de passe pour ${u.username} (8 caractères minimum) :`);
+      if (act === "resetcount") {
+        await api(`/users/${u.id}`, { method: "PATCH", json: { reset_count: true } });
+        toast("Counter reset to 0", "ok");
+        route();
+      } else if (act === "reset") {
+        const password = prompt(`New password for ${u.username} (8 characters minimum):`);
         if (!password) return;
         await api(`/users/${u.id}`, { method: "PATCH", json: { password } });
-        toast("Mot de passe changé", "ok");
+        toast("Password changed", "ok");
       } else if (act === "del") {
-        if (!confirm(`Supprimer le compte ${u.username} ?`)) return;
+        if (!confirm(`Delete account ${u.username}?`)) return;
         await api(`/users/${u.id}`, { method: "DELETE" });
         route();
       }
@@ -296,7 +483,7 @@ async function viewUsers() {
     const f = e.target;
     try {
       await api("/users", { method: "POST", json: { username: f.username.value.trim(), password: f.password.value, role: f.role.value } });
-      toast(`Compte ${f.username.value.trim()} créé`, "ok");
+      toast(`Account ${f.username.value.trim()} created`, "ok");
       route();
     } catch (err) { toast(err.message, "ko"); }
   });
@@ -304,39 +491,107 @@ async function viewUsers() {
 
 // ---------------------------------------------------------------- jobs list
 
-async function viewJobs() {
-  setNav(`<span class="crumb">jobs</span>`);
-  const jobs = await api("/jobs");
+const folderCrumbs = (dir, last = true) => {
+  const parts = dir ? dir.split("/") : [];
+  return parts.map((p, i) => {
+    const path = parts.slice(0, i + 1).join("/");
+    return i === parts.length - 1 && last
+      ? `<span class="sep">/</span> <span class="crumb">${esc(p)}</span>`
+      : `<span class="sep">/</span> <a href="#/f/${encodeURIComponent(path)}">${esc(p)}</a>`;
+  }).join(" ");
+};
+
+function resultCell(ok, ko, run, total) {
+  if (!total) return `<span class="muted small">—</span>`;
+  return `<div class="res">${stackBar(ok, ko, run, total)}<div class="txt"><span class="ok">${ok} ok</span><span class="ko">${ko} ko</span>${run ? `<span>${run} en cours</span>` : ""}</div></div>`;
+}
+
+async function viewJobs(dirEnc = "") {
+  const dir = decodeURIComponent(dirEnc || "");
+  const [jobs, folderPaths] = await Promise.all([api("/jobs"), api("/folders")]);
+  setNav(dir ? `<a href="#/">jobs</a> ${folderCrumbs(dir)}` : `<span class="crumb">jobs</span>`);
+  const inside = (p, base) => p === base || p.startsWith(base + "/");
+  const here = jobs.filter((j) => (j.folder || "") === dir).sort((a, b) => a.name.localeCompare(b.name, "fr", { sensitivity: "base" }));
+  const prefix = dir ? dir + "/" : "";
+  const subs = [...new Set(folderPaths.filter((p) => p.startsWith(prefix) && p !== dir).map((p) => p.slice(prefix.length).split("/")[0]))]
+    .sort((x, y) => x.localeCompare(y, "fr", { sensitivity: "base" }));
+  const folderStats = (name) => {
+    const full = prefix + name;
+    const js = jobs.filter((j) => inside(j.folder || "", full));
+    return {
+      full, jobs: js.length,
+      subs: new Set(folderPaths.filter((p) => p.startsWith(full + "/") && p.split("/").length === full.split("/").length + 1)).size,
+      repos: js.reduce((n, j) => n + j.repo_count, 0),
+      ok: js.reduce((n, j) => n + j.ok, 0), ko: js.reduce((n, j) => n + j.ko, 0), active: js.reduce((n, j) => n + j.active, 0),
+      last: Math.max(0, ...js.map((j) => j.last_activity || 0)),
+    };
+  };
+  const total = here.length + subs.length;
   $app.innerHTML = `
     <section class="head">
       <div>
-        <div class="eyebrow">~/jobs</div>
-        <h1>Sets de tests <span class="muted">(${jobs.length})</span></h1>
+        <div class="eyebrow">${dir ? "folder" : "library"}</div>
+        <h1>${dir ? esc(dir.split("/").pop()) : "Jobs"}</h1>
       </div>
-      <form id="new" class="inline new-job w">
-        <input name="name" placeholder="nouveau job, ex: my_printf" required>
-        <button class="btn primary">+ créer</button>
-      </form>
     </section>
-    <div class="grid">
-      ${jobs.map((j) => `
-        <a class="card job" href="#/jobs/${j.id}">
-          <div class="job-name">${esc(j.name)}</div>
-          <div class="muted small">${esc(j.description || "aucune description")}</div>
-          ${stackBar(j.ok, j.ko, j.active, j.repo_count)}
-          <div class="job-meta">
-            <span>${j.repo_count} dépôt${j.repo_count > 1 ? "s" : ""}</span>
-            <span class="ok">✔ ${j.ok}</span><span class="ko">✘ ${j.ko}</span>
-            ${j.active ? badge("running") : ""}
-            <span class="grow"></span>
-            <span>${j.last_activity ? fmtDate(j.last_activity) : ""}</span>
-          </div>
-        </a>`).join("") || `<div class="card empty"><pre class="ascii" style="display:inline-block;text-align:left">${ASCII}</pre><p>Aucun job pour l'instant. Crée ton premier set de tests ci-dessus.</p></div>`}
-    </div>`;
-  document.getElementById("new").addEventListener("submit", async (e) => {
+    <form id="create" class="create w">
+      <input name="name" id="cn" placeholder="Job or folder name" autocomplete="off" required>
+      <div class="seg" role="radiogroup" aria-label="type">
+        <label><input type="radio" name="kind" value="job" checked>Job</label>
+        <label><input type="radio" name="kind" value="folder">Folder</label>
+      </div>
+      <button class="btn primary">${ico("plus", 15)}Create here</button>
+    </form>
+    ${total ? `<div class="list">
+      <div class="lh"><span>Name</span><span>Repos</span><span>Results</span><span>Activity</span><span></span></div>
+      ${subs.map((n) => {
+        const st = folderStats(n);
+        return `<a class="lr folder" href="#/f/${encodeURIComponent(st.full)}" data-path="${esc(st.full)}">
+          <div class="nm"><span class="ficon">${ico("folder", 17)}</span><div><b>${esc(n)}</b><small>${st.subs ? st.subs + " folder" + (st.subs > 1 ? "s" : "") + " · " : ""}${st.jobs} job${st.jobs > 1 ? "s" : ""}</small></div></div>
+          <span class="num">${st.repos}</span>
+          ${resultCell(st.ok, st.ko, st.active, st.repos)}
+          <span class="when">${st.last ? fmtDate(st.last) : ""}</span>
+          <span class="acts w"><button class="icon" data-act="rename" title="rename / move">${ico("pencil", 15)}</button><button class="icon danger" data-act="del" title="delete">${ico("trash", 15)}</button></span>
+        </a>`;
+      }).join("")}
+      ${here.map((j) => `
+        <a class="lr" href="#/jobs/${j.id}">
+          <div class="nm"><span class="ficon">${jobDot(j)}</span><div><b>${esc(j.name)}</b><small>${esc(j.description || "no description")}</small></div></div>
+          <span class="num">${j.repo_count}</span>
+          ${resultCell(j.ok, j.ko, j.active, j.repo_count)}
+          <span class="when">${j.last_activity ? fmtDate(j.last_activity) : "never run"}</span>
+          <span></span>
+        </a>`).join("")}
+    </div>` : `<div class="card empty">${LOGO}<p>${dir ? "This folder is empty." : "No jobs yet."}<br>Create a job or a folder with the field above.</p></div>`}`;
+  document.getElementById("create").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const { id } = await api("/jobs", { method: "POST", json: { name: e.target.name.value } });
-    location.hash = `#/jobs/${id}/files`;
+    const name = e.target.name.value.trim();
+    try {
+      if (e.target.kind.value === "folder") {
+        await api("/folders", { method: "POST", json: { path: prefix + name } });
+        route();
+      } else {
+        const { id } = await api("/jobs", { method: "POST", json: { name, folder: dir } });
+        location.hash = `#/jobs/${id}/files`;
+      }
+    } catch (err) { toast(err.message, "ko"); }
+  });
+  $app.querySelector(".list")?.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-act]");
+    if (!btn) return;
+    e.preventDefault();
+    const path = btn.closest("[data-path]").dataset.path;
+    try {
+      if (btn.dataset.act === "rename") {
+        const dst = prompt("New folder path (e.g. C/week-1):", path);
+        if (!dst || dst.trim() === path) return;
+        await api("/folders/move", { method: "POST", json: { src: path, dst } });
+      } else {
+        if (!confirm(`Delete folder "${path}" (it must be empty)?`)) return;
+        await api(`/folders?path=${encodeURIComponent(path)}`, { method: "DELETE" });
+      }
+      route();
+    } catch (err) { toast(err.message, "ko"); }
   });
 }
 
@@ -344,20 +599,20 @@ async function viewJobs() {
 
 async function viewJob(id, tab = "repos") {
   const job = await api(`/jobs/${id}`);
-  setNav(`<a href="#/">jobs</a> <span class="sep">/</span> <span class="crumb">${esc(job.name)}</span>`);
-  const tabs = [["repos", "Dépôts", job.repos.length], ["files", "Fichiers de test", job.files.length]];
-  if (canWrite()) tabs.push(["settings", "Paramètres", null]);
+  setNav(`<a href="#/">jobs</a> ${folderCrumbs(job.folder || "", false)} <span class="sep">/</span> <span class="crumb">${esc(job.name)}</span>`);
+  const tabs = [["repos", "Repositories", job.repos.length], ["files", "Test files", job.files.length]];
+  if (canWrite()) tabs.push(["settings", "Settings", null]);
   $app.innerHTML = `
     <section class="head">
       <div>
-        <div class="eyebrow">~/jobs/${esc(job.name)}</div>
+        <div class="eyebrow">${job.folder ? esc(job.folder) : "job"}</div>
         <h1>${esc(job.name)}</h1>
         ${job.description ? `<div class="muted small">${esc(job.description)}</div>` : ""}
         <div class="cmdline"><span class="prompt">$</span> ${esc(job.command)}
-          <span class="chip">${esc(job.image)}</span><span class="chip">⏱ ${job.timeout}s</span><span class="chip">${job.memory_mb} Mo</span></div>
+          <span class="chip">${esc(job.image)}</span><span class="chip">⏱ ${job.timeout}s</span><span class="chip">${job.memory_mb} MB</span></div>
       </div>
     </section>
-    <div class="stats" id="stats"></div>
+    <div class="panel stats" id="stats"></div>
     <nav class="tabs">${tabs.map(([k, l, n]) => `<a href="#/jobs/${id}/${k}" class="${k === tab ? "on" : ""}">${l}${n !== null ? `<span class="n">${n}</span>` : ""}</a>`).join("")}</nav>
     <div id="tab"></div>`;
   renderStats(job.repos);
@@ -376,34 +631,56 @@ function renderStats(repos) {
   const run = repos.filter((r) => isActive(r.status)).length;
   const pcts = repos.map((r) => scorePct(r.score)).filter((p) => p !== null);
   const avg = pcts.length ? Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length) : null;
+  const cell = (r) => {
+    const tip = `${r.name} · ${r.status ? STATUS_LABEL[r.status] : "never run"}${r.score ? " · " + r.score : ""}`;
+    return r.build_id
+      ? `<a class="cell c-${r.status}" href="#/builds/${r.build_id}" title="${esc(tip)}" aria-label="${esc(tip)}"></a>`
+      : `<span class="cell c-none" title="${esc(tip)}"></span>`;
+  };
   el.innerHTML = `
-    <div class="card stat"><div class="v">${repos.length}</div><div class="k">dépôts</div></div>
-    <div class="card stat ok"><div class="v">${ok}</div><div class="k">réussis</div></div>
-    <div class="card stat ko"><div class="v">${ko}</div><div class="k">échoués</div></div>
-    <div class="card stat run"><div class="v">${run}</div><div class="k">en cours / file</div></div>
-    <div class="card stat avg"><div class="v">${avg === null ? "—" : avg + "%"}</div><div class="k">score moyen</div></div>`;
+    <div class="figs">
+      <div class="fig"><div class="v">${repos.length}</div><div class="k">repositories</div></div>
+      <div class="fig ok"><div class="v">${ok}</div><div class="k">passed</div></div>
+      <div class="fig ko"><div class="v">${ko}</div><div class="k">failed</div></div>
+      <div class="fig run"><div class="v">${run}</div><div class="k">running</div></div>
+      <div class="fig"><div class="v">${avg === null ? "—" : avg + "%"}</div><div class="k">avg score</div></div>
+    </div>
+    ${repos.length ? `<div class="matrix">${repos.map(cell).join("")}</div>` : ""}`;
 }
 
 function tabRepos(job, el) {
   el.innerHTML = `
     <div class="toolbar">
-      <button class="btn primary w" data-act="run-all">▶ tout lancer</button>
-      <button class="btn w" data-act="cancel-all">■ tout annuler</button>
-      <a class="btn" href="/api/jobs/${job.id}/export.csv">⤓ csv</a>
-      <input id="filter" placeholder="⌕ filtrer…  ( / )" class="grow">
+      <button class="btn primary w" data-act="run-all">${ico("play", 14)}Run all</button>
+      <button class="btn w" data-act="run-shown" title="runs only the repositories shown by the filter">${ico("play", 14)}Run filtered</button>
+      <button class="btn w" data-act="cancel-all">${ico("stop", 14)}Cancel all</button>
+      <a class="btn" href="/api/jobs/${job.id}/export.csv">${ico("down", 14)}CSV</a>
+      <a class="btn" href="/api/jobs/${job.id}/archive.zip" title="CSV + raw logs of the whole history">${ico("down", 14)}Archive</a>
+      <input id="filter" placeholder="⌕ filter…  ( / )" class="grow">
     </div>
     <div class="tablewrap"><table class="repos">
-      <thead><tr><th>Étudiant</th><th>Statut</th><th>Score</th><th>Commit</th><th>Durée</th><th>Date</th><th></th></tr></thead>
+      <thead><tr><th>Student</th><th>Status</th><th>Score</th><th>Commit</th><th>Time</th><th>Date</th><th></th></tr></thead>
       <tbody id="rows"></tbody>
     </table></div>
-    <details class="card add w" ${job.repos.length ? "" : "open"}>
-      <summary>+ ajouter des dépôts</summary>
+    <section class="card add w">
+      <form id="sync" class="settings" style="max-width:none">
+        <div class="eyebrow">repositories from GitHub</div>
+        <div class="row">
+          <label>Organization <input name="org" value="${esc(job.github_org || "")}" placeholder="ex: my-org" autocomplete="off"></label>
+          <label>Pattern <input name="pattern" value="${esc(job.repo_pattern || "")}" placeholder="e.g. day06-*   (or re:regex)" autocomplete="off"></label>
+        </div>
+        <div class="toolbar"><button class="btn primary" id="sync-btn">${job.repos.length ? "update repositories" : "add repositories"}</button>
+          <span class="muted small">Builds the list, then refreshes it on every press. A name you edited by hand is never overwritten.</span></div>
+      </form>
+    </section>
+    <details class="card add w">
+      <summary>+ add repositories by hand</summary>
       <form id="add">
-        <p class="muted small">Un dépôt par ligne (fichier .txt / .csv ou collé ci-dessous). Les autres mots de la ligne deviennent le nom affiché.<br>
+        <p class="muted small">One repository per line (.txt / .csv file or pasted below). Other words on the line become the display name.<br>
         <code>jean.dupont, https://github.com/my-org/day06-jean.dupont</code><br>
         <code>git@github.com:my-org/day06-marie.curie.git</code></p>
         <textarea name="text" rows="5" placeholder="https://github.com/org/repo"></textarea>
-        <div class="toolbar"><input type="file" name="file" accept=".txt,.csv,text/plain,text/csv"><button class="btn primary">ajouter</button></div>
+        <div class="toolbar"><input type="file" name="file" accept=".txt,.csv,text/plain,text/csv"><button class="btn primary">add</button></div>
         <pre id="add-result" class="muted small"></pre>
       </form>
     </details>`;
@@ -426,11 +703,12 @@ function tabRepos(job, el) {
         <td class="muted small">${fmtDate(r.finished_at || r.started_at || r.queued_at)}</td>
         <td class="actions w">
           ${isActive(r.status)
-            ? `<button class="icon" data-act="cancel" title="annuler">■</button>`
-            : `<button class="icon" data-act="run" title="lancer">▶</button>`}
-          <button class="icon danger" data-act="del" title="supprimer">✕</button>
+            ? `<button class="icon" data-act="cancel" title="cancel">${ico("stop", 15)}</button>`
+            : `<button class="icon" data-act="run" title="run">${ico("play", 15)}</button>`}
+          <button class="icon" data-act="rename" title="rename">${ico("pencil", 15)}</button>
+          <button class="icon danger" data-act="del" title="delete">${ico("trash", 15)}</button>
         </td>
-      </tr>`).join("") || `<tr><td colspan="7" class="muted" style="text-align:center;padding:28px">Aucun dépôt — ajoute-les ci-dessous.</td></tr>`;
+      </tr>`).join("") || `<tr><td colspan="7" class="muted" style="text-align:center;padding:28px">No repositories — add them below.</td></tr>`;
     renderStats(repos);
   };
   render();
@@ -452,25 +730,53 @@ function tabRepos(job, el) {
     }
     const act = btn.dataset.act;
     try {
-      if (act === "run-all") {
+      if (act === "run-shown") {
+        const q = filter.value.trim().toLowerCase();
+        const ids = repos.filter((r) => !q || r.name.toLowerCase().includes(q) || r.url.toLowerCase().includes(q)).map((r) => r.id);
+        if (!ids.length) return toast("No repository shown");
+        const { queued } = await api(`/jobs/${job.id}/run`, { method: "POST", json: { repo_ids: ids } });
+        toast(`${queued} build(s) queued`, "ok");
+      } else if (act === "rename") {
+        const r = repos.find((x) => x.id == tr.dataset.repo);
+        const name = prompt("New name:", r.name);
+        if (!name || !name.trim() || name.trim() === r.name) return;
+        await api(`/repos/${r.id}`, { method: "PATCH", json: { name: name.trim() } });
+      } else if (act === "run-all") {
         const { queued } = await api(`/jobs/${job.id}/run`, { method: "POST", json: {} });
-        toast(`${queued} build(s) en file`, "ok");
+        toast(`${queued} build(s) queued`, "ok");
       } else if (act === "cancel-all") {
         const { cancelled } = await api(`/jobs/${job.id}/cancel`, { method: "POST" });
-        toast(`${cancelled} build(s) annulé(s)`);
+        toast(`${cancelled} build(s) cancelled`);
       } else if (act === "run") {
         await api(`/repos/${tr.dataset.repo}/run`, { method: "POST" });
       } else if (act === "cancel") {
         await api(`/builds/${tr.dataset.build}/cancel`, { method: "POST" });
       } else if (act === "del") {
         const r = repos.find((x) => x.id == tr.dataset.repo);
-        if (!confirm(`Supprimer ${r.name} et son historique ?`)) return;
+        if (!confirm(`Delete ${r.name} and its history?`)) return;
         await api(`/repos/${r.id}`, { method: "DELETE" });
       }
       await refresh();
     } catch (err) {
       if (!(err instanceof Unauthorized)) toast(err.message, "ko");
     }
+  });
+
+  document.getElementById("sync").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = e.target, btn = document.getElementById("sync-btn");
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = "syncing…";
+    try {
+      const r = await api(`/jobs/${job.id}/repos/sync`, { method: "POST", json: { org: f.org.value, pattern: f.pattern.value } });
+      toast(`${r.total} repo(s): ${r.added} added, ${r.updated} renamed, ${r.removed} removed`, "ok");
+      btn.textContent = "update repositories";
+      await refresh();
+    } catch (err) {
+      btn.textContent = label;
+      if (!(err instanceof Unauthorized)) toast(err.message, "ko");
+    } finally { btn.disabled = false; }
   });
 
   document.getElementById("add").addEventListener("submit", async (e) => {
@@ -482,8 +788,8 @@ function tabRepos(job, el) {
     try {
       const res = await api(`/jobs/${job.id}/repos`, { method: "POST", form });
       document.getElementById("add-result").textContent =
-        `${res.added} ajouté(s), ${res.duplicates} doublon(s)` +
-        (res.rejected.length ? `\nlignes ignorées :\n  ${res.rejected.join("\n  ")}` : "");
+        `${res.added} added, ${res.duplicates} duplicate(s)` +
+        (res.rejected.length ? `\nignored lines:\n  ${res.rejected.join("\n  ")}` : "");
       f.text.value = "";
       f.file.value = "";
       await refresh();
@@ -498,15 +804,15 @@ function tabFiles(job, el) {
     <div class="files">
       <aside class="card">
         <ul id="flist"></ul>
-        <form id="newfile" class="inline w"><input name="name" placeholder="nouveau fichier (ex: tests.sh)" required><button class="btn">+</button></form>
-        <label class="btn upload w">⤒ uploader des fichiers<input type="file" id="up" multiple hidden></label>
-        <p class="muted small">Montés en lecture seule dans <code>/tests</code>. Le dépôt de l'étudiant est dans <code>/work</code> (dossier courant).
-        Affiche <code>AGORA_SCORE: 7/10</code> pour remplir la colonne score.</p>
+        <form id="newfile" class="inline w"><input name="name" placeholder="new file (e.g. tests.sh)" required><button class="btn">+</button></form>
+        <label class="btn upload w">⤒ upload files<input type="file" id="up" multiple hidden></label>
+        <p class="muted small">Mounted read-only in <code>/tests</code>. The student's repository is in <code>/work</code> (current directory).
+        Print <code>AGORA_SCORE: 7/10</code> to fill the score column.</p>
       </aside>
       <section class="card editor">
-        <div class="toolbar"><span id="fname" class="muted">← choisis un fichier</span><span class="grow"></span>
+        <div class="toolbar"><span id="fname" class="muted">← pick a file</span><span class="grow"></span>
           <button class="btn primary w" id="save" disabled>enregistrer (ctrl+s)</button>
-          <button class="btn danger w" id="delf" disabled>supprimer</button></div>
+          <button class="btn danger w" id="delf" disabled>delete</button></div>
         <textarea id="content" spellcheck="false" disabled></textarea>
       </section>
     </div>`;
@@ -518,17 +824,17 @@ function tabFiles(job, el) {
 
   const renderList = () => {
     flist.innerHTML = files.map((f) => `<li><a href="javascript:" data-name="${esc(f.name)}" class="${f.name === current ? "on" : ""}">${esc(f.name)}</a><span class="muted small">${f.size} o</span></li>`).join("")
-      || `<li class="muted">aucun fichier</li>`;
+      || `<li class="muted">no files</li>`;
   };
   const reload = async () => { files = (await api(`/jobs/${job.id}`)).files; renderList(); };
 
   const open = async (name) => {
-    if (dirty && !confirm("Modifications non enregistrées. Continuer ?")) return;
+    if (dirty && !confirm("Unsaved changes. Continue?")) return;
     const f = await api(`/jobs/${job.id}/files/${encodeURI(name)}`);
     current = name;
     dirty = false;
     document.getElementById("fname").textContent = name;
-    ta.value = f.binary ? "(fichier binaire — non éditable)" : f.content;
+    ta.value = f.binary ? "(binary file — not editable)" : f.content;
     ta.disabled = f.binary;
     ta.readOnly = !canWrite();
     save.disabled = f.binary;
@@ -540,7 +846,7 @@ function tabFiles(job, el) {
     if (!current || ta.disabled || !canWrite()) return;
     await api(`/jobs/${job.id}/files/${encodeURI(current)}`, { method: "PUT", json: { content: ta.value } });
     dirty = false;
-    toast(`${current} enregistré`, "ok");
+    toast(`${current} saved`, "ok");
     await reload();
   };
 
@@ -563,7 +869,7 @@ function tabFiles(job, el) {
     await api(`/jobs/${job.id}/files/${encodeURI(current)}`, { method: "DELETE" });
     current = null; dirty = false;
     ta.value = ""; ta.disabled = true; save.disabled = delf.disabled = true;
-    document.getElementById("fname").textContent = "← choisis un fichier";
+    document.getElementById("fname").textContent = "← pick a file";
     await reload();
   });
   document.getElementById("newfile").addEventListener("submit", async (e) => {
@@ -581,7 +887,7 @@ function tabFiles(job, el) {
     for (const f of e.target.files) form.append("files", f, f.name);
     try {
       const { count } = await api(`/jobs/${job.id}/files`, { method: "POST", form });
-      toast(`${count} fichier(s) uploadé(s)`, "ok");
+      toast(`${count} file(s) uploaded`, "ok");
       await reload();
     } catch (err) { toast(err.message, "ko"); }
     e.target.value = "";
@@ -593,19 +899,20 @@ function tabFiles(job, el) {
 function tabSettings(job, el) {
   el.innerHTML = `
     <form id="s" class="card settings">
-      <label>Nom <input name="name" value="${esc(job.name)}" required></label>
+      <label>Name <input name="name" value="${esc(job.name)}" required></label>
       <label>Description <input name="description" value="${esc(job.description)}"></label>
-      <label>Commande <span class="muted small">(exécutée avec sh -c dans /work)</span><input name="command" value="${esc(job.command)}" required></label>
-      <label>Image Docker <input name="image" value="${esc(job.image)}" required></label>
+      <label>Folder <span class="muted small">(e.g. C/week-1 — empty = root)</span><input name="folder" value="${esc(job.folder || "")}" autocomplete="off"></label>
+      <label>Command <span class="muted small">(run with sh -c in /work)</span><input name="command" value="${esc(job.command)}" required></label>
+      <label>Docker image <input name="image" value="${esc(job.image)}" required></label>
       <div class="row">
         <label>Timeout (s) <input name="timeout" type="number" min="1" max="3600" value="${job.timeout}"></label>
-        <label>Mémoire (Mo) <input name="memory_mb" type="number" min="64" max="4096" value="${job.memory_mb}"></label>
+        <label>Memory (MB) <input name="memory_mb" type="number" min="64" max="4096" value="${job.memory_mb}"></label>
       </div>
       <div class="toolbar">
-        <button class="btn primary">enregistrer</button>
+        <button class="btn primary">save</button>
         <span class="grow"></span>
-        <button type="button" class="btn" id="dup">dupliquer le job</button>
-        <button type="button" class="btn danger" id="del">supprimer le job</button>
+        <button type="button" class="btn" id="dup">duplicate job</button>
+        <button type="button" class="btn danger" id="del">delete job</button>
       </div>
     </form>`;
   const f = document.getElementById("s");
@@ -613,10 +920,10 @@ function tabSettings(job, el) {
     e.preventDefault();
     try {
       await api(`/jobs/${job.id}`, { method: "PUT", json: {
-        name: f.name.value, description: f.description.value, command: f.command.value,
+        name: f.name.value, description: f.description.value, folder: f.folder.value, command: f.command.value,
         image: f.image.value, timeout: +f.timeout.value, memory_mb: +f.memory_mb.value,
       } });
-      toast("Paramètres enregistrés", "ok");
+      toast("Settings saved", "ok");
       route();
     } catch (err) { toast(err.message, "ko"); }
   });
@@ -625,7 +932,7 @@ function tabSettings(job, el) {
     location.hash = `#/jobs/${id}/settings`;
   });
   document.getElementById("del").addEventListener("click", async () => {
-    if (!confirm(`Supprimer définitivement « ${job.name} », ses dépôts et tout l'historique ?`)) return;
+    if (!confirm(`Permanently delete "${job.name}", its repositories and all history?`)) return;
     await api(`/jobs/${job.id}`, { method: "DELETE" });
     location.hash = "#/";
   });
@@ -652,19 +959,19 @@ async function viewBuild(id) {
         <h1>${esc(b.repo_name)} <span id="badge"></span></h1>
         <div class="muted small" id="meta"></div>
       </div>
-      <button class="btn" data-go="${prev?.build_id || ""}" ${prev ? "" : "disabled"} title="précédent">← <span class="kbd">←</span></button>
-      <button class="btn primary w" id="rerun" title="relancer">↻ relancer <span class="kbd" style="color:inherit;border-color:currentColor">r</span></button>
-      <button class="btn danger w" id="cancel">■ annuler</button>
-      <button class="btn" data-go="${next?.build_id || ""}" ${next ? "" : "disabled"} title="suivant"><span class="kbd">→</span> →</button>
+      <button class="btn" data-go="${prev?.build_id || ""}" ${prev ? "" : "disabled"} title="previous">${ico("back", 14)}</button>
+      <button class="btn primary w" id="rerun" title="re-run">${ico("redo", 14)}Re-run <span class="kbd" style="color:inherit;border-color:currentColor">r</span></button>
+      <button class="btn danger w" id="cancel">${ico("stop", 14)}Cancel</button>
+      <button class="btn" data-go="${next?.build_id || ""}" ${next ? "" : "disabled"} title="next">${ico("fwd", 14)}</button>
     </section>
     <div class="build">
       <div class="terminal">
         <div class="term-bar"><i></i><i></i><i></i><span>agora@sandbox: /work — build #${id} — ${esc(shortRepo(b.repo_url))}</span>
-          <label><input type="checkbox" id="follow" checked> suivre</label></div>
+          <label><input type="checkbox" id="follow" checked> follow</label></div>
         <pre id="term" class="term"></pre>
       </div>
       <aside class="card history">
-        <div class="eyebrow">historique · ${idx + 1}/${ran.length}</div>
+        <div class="eyebrow">history · ${idx + 1}/${ran.length}</div>
         <ul>${repo.builds.map((h) => `
           <li class="h-${h.status} ${h.id === id ? "on" : ""}"><a href="#/builds/${h.id}">#${h.id}</a> ${badge(h.status)}
             <span class="score">${esc(h.score || "")}</span><br><span class="muted small">${fmtDate(h.queued_at)} · <span class="sha">${h.commit_sha ? h.commit_sha.slice(0, 7) : ""}</span></span></li>`).join("")}
@@ -689,7 +996,7 @@ async function viewBuild(id) {
       `build #${x.id}`,
       x.commit_sha ? `commit <span class="sha">${x.commit_sha.slice(0, 10)}</span>` : null,
       x.exit_code !== null && x.exit_code !== undefined ? `exit ${x.exit_code}` : null,
-      `durée ${fmtDur(x)}`,
+      `time ${fmtDur(x)}`,
       fmtDate(x.started_at || x.queued_at),
       x.error ? `<span class="err">${esc(x.error)}</span>` : null,
     ].filter(Boolean).join(" · ");
