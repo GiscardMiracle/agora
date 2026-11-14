@@ -137,6 +137,49 @@ def enqueue(c, job_id: int, repo_ids: list[int], user: dict) -> int:
     return n
 
 
+def job_access(c, job_id: int, user: dict) -> str | None:
+    """'owner' (the creator, or any admin), 'shared', or None when the job is hidden from this user."""
+    j = db.row(c, "SELECT owner_id FROM jobs WHERE id=?", job_id)
+    if not j:
+        return None
+    if user["role"] == "admin" or j["owner_id"] == user["id"]:
+        return "owner"
+    if db.row(c, "SELECT 1 AS x FROM job_shares WHERE job_id=? AND user_id=?", job_id, user["id"]):
+        return "shared"
+    return None
+
+
+def guard_job(job_id: int, user: dict, owner: bool = False) -> str:
+    """404 for a job the user cannot see (its existence is not revealed); 403 if `owner` is required."""
+    with db.tx() as c:
+        role = job_access(c, job_id, user)
+    if role is None:
+        raise HTTPException(404, "not found")
+    if owner and role != "owner":
+        raise HTTPException(403, "only the owner of this job can do that")
+    return role
+
+
+def guard_repo(repo_id: int, user: dict, owner: bool = False) -> int:
+    with db.tx() as c:
+        r = db.row(c, "SELECT job_id FROM repos WHERE id=?", repo_id)
+    if not r:
+        raise HTTPException(404, "not found")
+    guard_job(r["job_id"], user, owner)
+    return r["job_id"]
+
+
+def guard_build(build_id: int, user: dict) -> None:
+    with db.tx() as c:
+        b = db.row(c, "SELECT job_id FROM builds WHERE id=?", build_id)
+    if not b:
+        raise HTTPException(404, "not found")
+    guard_job(b["job_id"], user)
+
+
+VISIBLE = "(j.owner_id = ? OR j.id IN (SELECT job_id FROM job_shares WHERE user_id = ?))"
+
+
 def cancel_active(c, where: str, *args) -> list[int]:
     return [r["id"] for r in db.rows(c, f"SELECT id FROM builds WHERE status IN ('queued','running') AND {where}", *args)]
 
@@ -307,6 +350,9 @@ def delete_user(user_id: int, me: dict = Depends(require_admin)):
     if user_id == me["id"]:
         raise HTTPException(400, "you cannot delete your own account")
     with db.tx() as c:
+        # What the user created goes to the admin who deletes the account; shares disappear by cascade.
+        c.execute("UPDATE jobs SET owner_id=? WHERE owner_id=?", me["id"], user_id)
+        c.execute("UPDATE folders SET owner_id=? WHERE owner_id=?", me["id"], user_id)
         c.execute("DELETE FROM users WHERE id=?", user_id)
     keys.delete(user_id)
     return {"ok": True}
@@ -329,10 +375,10 @@ def clean_folder(path: str) -> str:
     return "/".join(parts)
 
 
-def ensure_folder(c, path: str) -> None:
+def ensure_folder(c, path: str, owner_id: int | None = None) -> None:
     parts = path.split("/") if path else []
     for i in range(1, len(parts) + 1):
-        c.execute("INSERT OR IGNORE INTO folders (path) VALUES (?)", "/".join(parts[:i]))
+        c.execute("INSERT OR IGNORE INTO folders (path, owner_id) VALUES (?, ?)", "/".join(parts[:i]), owner_id)
 
 
 class JobIn(BaseModel):
@@ -346,11 +392,13 @@ class JobIn(BaseModel):
 
 
 @api.get("/jobs")
-def list_jobs():
+def list_jobs(user: dict = Depends(require_auth)):
+    where, args = ("", ()) if user["role"] == "admin" else (f"WHERE {VISIBLE} ", (user["id"], user["id"]))
     with db.tx() as c:
         return db.rows(
             c,
-            "SELECT j.*, "
+            "SELECT j.*, u.username AS owner_name, "
+            " (SELECT COUNT(*) FROM job_shares s WHERE s.job_id=j.id) AS share_count, "
             " (SELECT COUNT(*) FROM repos r WHERE r.job_id=j.id) AS repo_count, "
             " (SELECT COUNT(*) FROM builds b WHERE b.job_id=j.id AND b.status IN ('queued','running')) AS active, "
             " (SELECT MAX(COALESCE(finished_at, started_at, queued_at)) FROM builds b WHERE b.job_id=j.id) AS last_activity, "
@@ -358,28 +406,33 @@ def list_jobs():
             "   WHERE r.job_id=j.id AND b.status='success') AS ok, "
             " (SELECT COUNT(*) FROM repos r JOIN builds b ON b.id = (SELECT MAX(id) FROM builds WHERE repo_id=r.id) "
             "   WHERE r.job_id=j.id AND b.status IN ('failed','timeout','error')) AS ko "
-            "FROM jobs j ORDER BY j.updated_at DESC",
+            "FROM jobs j LEFT JOIN users u ON u.id=j.owner_id " + where + "ORDER BY j.updated_at DESC",
+            *args,
         )
 
 
 @api.post("/jobs")
-def create_job(body: JobIn):
+def create_job(body: JobIn, user: dict = Depends(require_auth)):
     folder = clean_folder(body.folder)
     with db.tx() as c:
-        ensure_folder(c, folder)
+        ensure_folder(c, folder, user["id"])
         cur = c.execute(
-            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, folder, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, folder, owner_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             body.name.strip(), body.description, body.image.strip(), body.command,
-            body.timeout, body.memory_mb, folder, db.now(), db.now(),
+            body.timeout, body.memory_mb, folder, user["id"], db.now(), db.now(),
         )
         return {"id": cur.lastrowid}
 
 
 @api.get("/jobs/{job_id}")
-def get_job(job_id: int):
+def get_job(job_id: int, user: dict = Depends(require_auth)):
+    role = guard_job(job_id, user)
     with db.tx() as c:
-        job = get_or_404(c, "SELECT * FROM jobs WHERE id=?", job_id)
+        job = get_or_404(c, "SELECT j.*, u.username AS owner_name FROM jobs j LEFT JOIN users u ON u.id=j.owner_id WHERE j.id=?", job_id)
+        job["access"] = role
+        if role == "owner":
+            job["shares"] = [r["user_id"] for r in db.rows(c, "SELECT user_id FROM job_shares WHERE job_id=?", job_id)]
         job["files"] = db.rows(
             c, "SELECT name, length(content) AS size FROM job_files WHERE job_id=? ORDER BY name", job_id
         )
@@ -395,11 +448,12 @@ def get_job(job_id: int):
 
 
 @api.put("/jobs/{job_id}")
-def update_job(job_id: int, body: JobIn):
+def update_job(job_id: int, body: JobIn, user: dict = Depends(require_auth)):
+    guard_job(job_id, user, True)
     folder = clean_folder(body.folder)
     with db.tx() as c:
         get_or_404(c, "SELECT id FROM jobs WHERE id=?", job_id)
-        ensure_folder(c, folder)
+        ensure_folder(c, folder, user["id"])
         c.execute(
             "UPDATE jobs SET name=?, description=?, image=?, command=?, timeout=?, memory_mb=?, folder=?, updated_at=? "
             "WHERE id=?",
@@ -410,14 +464,15 @@ def update_job(job_id: int, body: JobIn):
 
 
 @api.post("/jobs/{job_id}/duplicate")
-def duplicate_job(job_id: int):
+def duplicate_job(job_id: int, user: dict = Depends(require_auth)):
+    guard_job(job_id, user)
     with db.tx() as c:
         j = get_or_404(c, "SELECT * FROM jobs WHERE id=?", job_id)
         cur = c.execute(
-            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, folder, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, folder, owner_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             f"{j['name']} (copy)", j["description"], j["image"], j["command"],
-            j["timeout"], j["memory_mb"], j["folder"], db.now(), db.now(),
+            j["timeout"], j["memory_mb"], j["folder"], user["id"], db.now(), db.now(),
         )
         c.execute(
             "INSERT INTO job_files (job_id, name, content) SELECT ?, name, content FROM job_files WHERE job_id=?",
@@ -427,7 +482,8 @@ def duplicate_job(job_id: int):
 
 
 @api.delete("/jobs/{job_id}")
-def delete_job(job_id: int):
+def delete_job(job_id: int, user: dict = Depends(require_auth)):
+    guard_job(job_id, user, True)
     with db.tx() as c:
         active = cancel_active(c, "job_id=?", job_id)
     for bid in active:
@@ -437,6 +493,42 @@ def delete_job(job_id: int):
         c.execute("DELETE FROM jobs WHERE id=?", job_id)
     remove_logs(ids)
     return {"ok": True}
+
+
+class SharesIn(BaseModel):
+    user_ids: list[int]
+
+
+@api.put("/jobs/{job_id}/shares")
+def set_shares(job_id: int, body: SharesIn, user: dict = Depends(require_auth)):
+    """Choose who else can see this job (owner and admins always can)."""
+    guard_job(job_id, user, True)
+    with db.tx() as c:
+        owner = db.row(c, "SELECT owner_id FROM jobs WHERE id=?", job_id)["owner_id"]
+        valid = {r["id"] for r in db.rows(c, "SELECT id FROM users WHERE role != 'admin'")}
+        ids = sorted(i for i in set(body.user_ids) if i in valid and i != owner)
+        c.execute("DELETE FROM job_shares WHERE job_id=?", job_id)
+        for i in ids:
+            c.execute("INSERT INTO job_shares (job_id, user_id) VALUES (?, ?)", job_id, i)
+    return {"shares": ids}
+
+
+@api.get("/directory")
+def directory(user: dict = Depends(require_auth)):
+    """Users a job can be shared with (admins already see everything)."""
+    with db.tx() as c:
+        return db.rows(c, "SELECT id, username, role FROM users WHERE role != 'admin' AND id != ? ORDER BY username COLLATE NOCASE", user["id"])
+
+
+def folder_owned(c, path: str, user: dict) -> bool:
+    """True if the user may restructure this folder: admin, or everything inside is theirs."""
+    if user["role"] == "admin":
+        return True
+    like = path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
+    uid = user["id"]
+    bad_folder = db.row(c, "SELECT 1 AS x FROM folders WHERE (path = ? OR path LIKE ? ESCAPE '\\') AND COALESCE(owner_id, -1) != ? LIMIT 1", path, like, uid)
+    bad_job = db.row(c, "SELECT 1 AS x FROM jobs WHERE (folder = ? OR folder LIKE ? ESCAPE '\\') AND COALESCE(owner_id, -1) != ? LIMIT 1", path, like, uid)
+    return not bad_folder and not bad_job
 
 
 # ---------------- folders ----------------
@@ -451,10 +543,17 @@ class FolderMove(BaseModel):
 
 
 @api.get("/folders")
-def list_folders():
+def list_folders(user: dict = Depends(require_auth)):
+    """Admins see every folder; others see their own plus the ones holding a job they can see."""
     with db.tx() as c:
-        paths = {r["path"] for r in db.rows(c, "SELECT path FROM folders")}
-        paths |= {r["folder"] for r in db.rows(c, "SELECT DISTINCT folder FROM jobs WHERE folder != ''")}
+        if user["role"] == "admin":
+            paths = {r["path"] for r in db.rows(c, "SELECT path FROM folders")}
+            paths |= {r["folder"] for r in db.rows(c, "SELECT DISTINCT folder FROM jobs WHERE folder != ''")}
+        else:
+            uid = user["id"]
+            paths = {r["path"] for r in db.rows(c, "SELECT path FROM folders WHERE owner_id = ?", uid)}
+            paths |= {r["folder"] for r in db.rows(
+                c, f"SELECT DISTINCT j.folder AS folder FROM jobs j WHERE j.folder != '' AND {VISIBLE}", uid, uid)}
     full = set()
     for p in paths:  # ancestors of a job folder created before folders existed
         parts = p.split("/")
@@ -463,17 +562,17 @@ def list_folders():
 
 
 @api.post("/folders")
-def create_folder(body: FolderIn):
+def create_folder(body: FolderIn, user: dict = Depends(require_auth)):
     path = clean_folder(body.path)
     if not path:
         raise HTTPException(400, "empty folder name")
     with db.tx() as c:
-        ensure_folder(c, path)
+        ensure_folder(c, path, user["id"])
     return {"path": path}
 
 
 @api.post("/folders/move")
-def move_folder(body: FolderMove):
+def move_folder(body: FolderMove, user: dict = Depends(require_auth)):
     """Rename or move a folder together with everything inside it."""
     src, dst = clean_folder(body.src), clean_folder(body.dst)
     if not src or not dst:
@@ -484,23 +583,27 @@ def move_folder(body: FolderMove):
         raise HTTPException(400, "cannot move a folder into itself")
     like = src.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
     with db.tx() as c:
+        if not folder_owned(c, src, user):
+            raise HTTPException(403, "you can only move folders that contain nothing but your own work")
         existing = {r["path"] for r in db.rows(c, "SELECT path FROM folders")}
         if dst in existing:
             raise HTTPException(409, "a folder with this name already exists")
-        ensure_folder(c, "/".join(dst.split("/")[:-1]))
+        ensure_folder(c, "/".join(dst.split("/")[:-1]), user["id"])
         c.execute("UPDATE folders SET path = ? || substr(path, ?) WHERE path = ? OR path LIKE ? ESCAPE '\\'",
                   dst, len(src) + 1, src, like)
         c.execute("UPDATE jobs SET folder = ? || substr(folder, ?) WHERE folder = ? OR folder LIKE ? ESCAPE '\\'",
                   dst, len(src) + 1, src, like)
-        ensure_folder(c, dst)
+        ensure_folder(c, dst, user["id"])
     return {"path": dst}
 
 
 @api.delete("/folders")
-def delete_folder(path: str):
+def delete_folder(path: str, user: dict = Depends(require_auth)):
     path = clean_folder(path)
     like = path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
     with db.tx() as c:
+        if not folder_owned(c, path, user):
+            raise HTTPException(403, "you can only delete your own folders")
         busy = db.row(c, "SELECT id FROM jobs WHERE folder = ? OR folder LIKE ? ESCAPE '\\' LIMIT 1", path, like)
         if busy:
             raise HTTPException(409, "this folder contains jobs: move or delete them first")
@@ -511,7 +614,8 @@ def delete_folder(path: str):
 # ---------------- job files ----------------
 
 @api.post("/jobs/{job_id}/files")
-async def upload_files(job_id: int, files: list[UploadFile] = File(...)):
+async def upload_files(job_id: int, files: list[UploadFile] = File(...), user: dict = Depends(require_auth)):
+    guard_job(job_id, user, True)
     payload = [(check_file_name(f.filename or ""), await f.read()) for f in files]
     with db.tx() as c:
         get_or_404(c, "SELECT id FROM jobs WHERE id=?", job_id)
@@ -526,7 +630,8 @@ async def upload_files(job_id: int, files: list[UploadFile] = File(...)):
 
 
 @api.get("/jobs/{job_id}/files/{name:path}")
-def read_file(job_id: int, name: str):
+def read_file(job_id: int, name: str, user: dict = Depends(require_auth)):
+    guard_job(job_id, user)
     with db.tx() as c:
         f = get_or_404(c, "SELECT content FROM job_files WHERE job_id=? AND name=?", job_id, name)
     try:
@@ -540,7 +645,8 @@ class FileIn(BaseModel):
 
 
 @api.put("/jobs/{job_id}/files/{name:path}")
-def write_file(job_id: int, name: str, body: FileIn):
+def write_file(job_id: int, name: str, body: FileIn, user: dict = Depends(require_auth)):
+    guard_job(job_id, user, True)
     name = check_file_name(name)
     with db.tx() as c:
         get_or_404(c, "SELECT id FROM jobs WHERE id=?", job_id)
@@ -554,7 +660,8 @@ def write_file(job_id: int, name: str, body: FileIn):
 
 
 @api.delete("/jobs/{job_id}/files/{name:path}")
-def delete_file(job_id: int, name: str):
+def delete_file(job_id: int, name: str, user: dict = Depends(require_auth)):
+    guard_job(job_id, user, True)
     with db.tx() as c:
         c.execute("DELETE FROM job_files WHERE job_id=? AND name=?", job_id, name)
     return {"ok": True}
@@ -563,7 +670,8 @@ def delete_file(job_id: int, name: str):
 # ---------------- repos ----------------
 
 @api.post("/jobs/{job_id}/repos")
-async def add_repos(job_id: int, text: str = Form(""), file: UploadFile | None = File(None)):
+async def add_repos(job_id: int, text: str = Form(""), file: UploadFile | None = File(None), user: dict = Depends(require_auth)):
+    guard_job(job_id, user, True)
     content = text
     if file is not None:
         content += "\n" + (await file.read()).decode(errors="replace")
@@ -586,7 +694,8 @@ class SyncIn(BaseModel):
 
 
 @api.post("/jobs/{job_id}/repos/sync")
-def sync_repos(job_id: int, body: SyncIn):
+def sync_repos(job_id: int, body: SyncIn, user: dict = Depends(require_auth)):
+    guard_job(job_id, user, True)
     """Create or refresh the repository list from GitHub. Remembers org + pattern for the next press."""
     with db.tx() as c:
         job = get_or_404(c, "SELECT id, github_org, repo_pattern FROM jobs WHERE id=?", job_id)
@@ -624,7 +733,7 @@ def sync_repos(job_id: int, body: SyncIn):
             if u not in wanted:
                 gone.append(r["id"])
     for rid in gone:
-        delete_repo(rid)
+        delete_repo(rid, user)
     return {"added": added, "updated": updated, "removed": len(gone), "total": len(names)}
 
 
@@ -633,7 +742,8 @@ class RepoPatch(BaseModel):
 
 
 @api.patch("/repos/{repo_id}")
-def rename_repo(repo_id: int, body: RepoPatch):
+def rename_repo(repo_id: int, body: RepoPatch, user: dict = Depends(require_auth)):
+    guard_repo(repo_id, user, True)
     with db.tx() as c:
         get_or_404(c, "SELECT id FROM repos WHERE id=?", repo_id)
         c.execute("UPDATE repos SET name=?, renamed=1 WHERE id=?", body.name.strip(), repo_id)
@@ -641,7 +751,8 @@ def rename_repo(repo_id: int, body: RepoPatch):
 
 
 @api.delete("/repos/{repo_id}")
-def delete_repo(repo_id: int):
+def delete_repo(repo_id: int, user: dict = Depends(require_auth)):
+    guard_repo(repo_id, user, True)
     with db.tx() as c:
         active = cancel_active(c, "repo_id=?", repo_id)
     for bid in active:
@@ -654,7 +765,8 @@ def delete_repo(repo_id: int):
 
 
 @api.get("/repos/{repo_id}/builds")
-def repo_builds(repo_id: int):
+def repo_builds(repo_id: int, user: dict = Depends(require_auth)):
+    guard_repo(repo_id, user)
     with db.tx() as c:
         repo = get_or_404(c, "SELECT * FROM repos WHERE id=?", repo_id)
         repo["builds"] = db.rows(c, "SELECT * FROM builds WHERE repo_id=? ORDER BY id DESC", repo_id)
@@ -669,6 +781,7 @@ class RunIn(BaseModel):
 
 @api.post("/jobs/{job_id}/run")
 def run_job(job_id: int, body: RunIn, user: dict = Depends(require_auth)):
+    guard_job(job_id, user)
     with db.tx() as c:
         get_or_404(c, "SELECT id FROM jobs WHERE id=?", job_id)
         all_ids = [r["id"] for r in db.rows(c, "SELECT id FROM repos WHERE job_id=? ORDER BY name COLLATE NOCASE", job_id)]
@@ -678,6 +791,7 @@ def run_job(job_id: int, body: RunIn, user: dict = Depends(require_auth)):
 
 @api.post("/repos/{repo_id}/run")
 def run_repo(repo_id: int, user: dict = Depends(require_auth)):
+    guard_repo(repo_id, user)
     with db.tx() as c:
         r = get_or_404(c, "SELECT job_id FROM repos WHERE id=?", repo_id)
         queued = enqueue(c, r["job_id"], [repo_id], user)
@@ -686,19 +800,22 @@ def run_repo(repo_id: int, user: dict = Depends(require_auth)):
 
 
 @api.post("/jobs/{job_id}/cancel")
-def cancel_job(job_id: int):
+def cancel_job(job_id: int, user: dict = Depends(require_auth)):
+    guard_job(job_id, user)
     with db.tx() as c:
         active = cancel_active(c, "job_id=?", job_id)
     return {"cancelled": sum(runner.cancel(bid) for bid in active)}
 
 
 @api.post("/builds/{build_id}/cancel")
-def cancel_build(build_id: int):
+def cancel_build(build_id: int, user: dict = Depends(require_auth)):
+    guard_build(build_id, user)
     return {"ok": runner.cancel(build_id)}
 
 
 @api.get("/builds/{build_id}")
-def get_build(build_id: int):
+def get_build(build_id: int, user: dict = Depends(require_auth)):
+    guard_build(build_id, user)
     with db.tx() as c:
         return get_or_404(
             c,
@@ -709,7 +826,8 @@ def get_build(build_id: int):
 
 
 @api.get("/builds/{build_id}/log")
-def build_log(build_id: int, offset: int = 0):
+def build_log(build_id: int, offset: int = 0, user: dict = Depends(require_auth)):
+    guard_build(build_id, user)
     """Incremental log: returns raw bytes from `offset`; the client polls until X-Done is 1."""
     with db.tx() as c:
         b = get_or_404(c, "SELECT status FROM builds WHERE id=?", build_id)
@@ -730,8 +848,9 @@ def build_log(build_id: int, offset: int = 0):
 
 
 @api.get("/jobs/{job_id}/export.csv")
-def export_csv(job_id: int):
-    job = get_job(job_id)
+def export_csv(job_id: int, user: dict = Depends(require_auth)):
+    guard_job(job_id, user)
+    job = get_job(job_id, user)
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["name", "url", "status", "score", "exit_code", "commit", "finished_at"])
@@ -745,7 +864,8 @@ def export_csv(job_id: int):
 
 
 @api.get("/jobs/{job_id}/archive.zip")
-def export_archive(job_id: int):
+def export_archive(job_id: int, user: dict = Depends(require_auth)):
+    guard_job(job_id, user)
     """Full history (CSV + raw logs) as a ZIP, to keep before the automatic purge."""
     try:
         filename, data = archive.build_zip(job_id)

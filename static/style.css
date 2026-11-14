@@ -424,3 +424,13 @@ body.auth main { max-width: none; padding: 0; }
   .lr .acts { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* visibilité / partage */
+body[data-access="shared"] .own { display: none !important; }
+.vis { margin-top: 4px; }
+.people { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.pick { flex-direction: row !important; align-items: center; gap: 10px !important; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; font-weight: 500; }
+.pick:hover { background: var(--hover); }
+.pick:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.pick .avatar { width: 24px; height: 24px; font-size: 10px; }
+.pick .muted { margin-left: auto; font-weight: 400; }

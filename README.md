@@ -60,6 +60,13 @@ clé publique sur GitHub. Sans clé, lancer un job renvoie une erreur immédiate
 Chaque non-admin dispose de 15 lancements **au total** (ajustable par l'admin dans *Utilisateurs*, compteur
 remis à zéro avec ↺). Un lancement = un clic sur ▶ (dépôt seul, tout, ou filtre), quel que soit le nombre de dépôts.
 
+## Visibilité et partage
+
+Un job (et les dossiers créés) n'est visible que de son créateur et des admins. Dans *Settings → sharing*, le créateur
+choisit qui d'autre peut le voir. Les personnes avec qui il est partagé consultent les résultats et lancent des builds
+(avec leur propre clé SSH et leur propre quota) ; seuls le créateur et les admins modifient, partagent ou suppriment.
+Quand un compte est supprimé, ses jobs passent à l'admin qui le supprime.
+
 ## Archives et purge
 
 *⤓ archive* exporte tout l'historique d'un job en ZIP (`builds.csv` + `logs/<dépôt>/<build>.log`).

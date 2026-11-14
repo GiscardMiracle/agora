@@ -21,6 +21,12 @@ CREATE TABLE IF NOT EXISTS folders (
     path TEXT PRIMARY KEY   -- "C/week-1": every ancestor has its own row too
 );
 
+CREATE TABLE IF NOT EXISTS job_shares (
+    job_id  INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (job_id, user_id)
+);
+
 CREATE TABLE IF NOT EXISTS job_files (
     id      INTEGER PRIMARY KEY,
     job_id  INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -110,6 +116,8 @@ MIGRATIONS = [
     ("users", "launch_count", "INTEGER NOT NULL DEFAULT 0"),
     ("users", "ssh_public_key", "TEXT"),
     ("builds", "user_id", "INTEGER"),
+    ("jobs", "owner_id", "INTEGER"),
+    ("folders", "owner_id", "INTEGER"),
     ("jobs", "folder", "TEXT NOT NULL DEFAULT ''"),
     ("jobs", "github_org", "TEXT NOT NULL DEFAULT ''"),
     ("jobs", "repo_pattern", "TEXT NOT NULL DEFAULT ''"),
@@ -122,6 +130,11 @@ def _migrate(conn: Conn) -> None:
         cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    # Jobs and folders created before ownership existed belong to the first admin.
+    first = conn.execute("SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1").fetchone()
+    if first:
+        conn.execute("UPDATE jobs SET owner_id=? WHERE owner_id IS NULL", first["id"])
+        conn.execute("UPDATE folders SET owner_id=? WHERE owner_id IS NULL", first["id"])
 
 
 def init() -> None:

@@ -183,6 +183,7 @@ async function route() {
     if (!ME) { location.hash = "#/login"; return; }
   }
   document.body.classList.toggle("auth", h === "#/login");
+  delete document.body.dataset.access;
   if (h !== "#/login") renderSidebar();
   for (const [re, view] of routes) {
     const m = h.match(re);
@@ -265,7 +266,7 @@ async function renderSidebar() {
   const quota = ME.role === "admin" ? "" : (() => {
     const used = ME.launch_count ?? 0, max = ME.launch_limit ?? 0, left = max - used;
     const cls = left <= 0 ? "out" : left <= 3 ? "low" : "";
-    return `<div class="quota ${cls}"><div style="display:flex;justify-content:space-between"><span>lancements</span><span>${used} / ${max}</span></div><div class="bar"><b style="width:${max ? Math.min(100, (100 * used) / max) : 100}%"></b></div></div>`;
+    return `<div class="quota ${cls}"><div style="display:flex;justify-content:space-between"><span>launches</span><span>${used} / ${max}</span></div><div class="bar"><b style="width:${max ? Math.min(100, (100 * used) / max) : 100}%"></b></div></div>`;
   })();
   side.innerHTML = `
     <a href="#/" class="brand">${LOGO}agora</a>
@@ -556,7 +557,7 @@ async function viewJobs(dirEnc = "") {
       }).join("")}
       ${here.map((j) => `
         <a class="lr" href="#/jobs/${j.id}">
-          <div class="nm"><span class="ficon">${jobDot(j)}</span><div><b>${esc(j.name)}</b><small>${esc(j.description || "no description")}</small></div></div>
+          <div class="nm"><span class="ficon">${jobDot(j)}</span><div><b>${esc(j.name)}</b><small>${esc(j.description || "no description")}${j.owner_id !== ME.id && j.owner_name ? ` · ${ME.role === "admin" ? "owner" : "by"} ${esc(j.owner_name)}` : j.share_count ? ` · shared with ${j.share_count}` : ""}</small></div></div>
           <span class="num">${j.repo_count}</span>
           ${resultCell(j.ok, j.ko, j.active, j.repo_count)}
           <span class="when">${j.last_activity ? fmtDate(j.last_activity) : "never run"}</span>
@@ -601,13 +602,20 @@ async function viewJob(id, tab = "repos") {
   const job = await api(`/jobs/${id}`);
   setNav(`<a href="#/">jobs</a> ${folderCrumbs(job.folder || "", false)} <span class="sep">/</span> <span class="crumb">${esc(job.name)}</span>`);
   const tabs = [["repos", "Repositories", job.repos.length], ["files", "Test files", job.files.length]];
-  if (canWrite()) tabs.push(["settings", "Settings", null]);
+  document.body.dataset.access = job.access;
+  if (canWrite() && job.access === "owner") tabs.push(["settings", "Settings", null]);
+  const visibility = job.access === "shared"
+    ? `Shared with you by ${esc(job.owner_name || "an admin")}`
+    : ME.role === "admin" && job.owner_id !== ME.id
+      ? `Owner: ${esc(job.owner_name || "—")}${job.shares?.length ? ` · shared with ${job.shares.length}` : ""}`
+      : job.shares?.length ? `Shared with ${job.shares.length} ${job.shares.length > 1 ? "people" : "person"}` : "Private: only you and admins can see this";
   $app.innerHTML = `
     <section class="head">
       <div>
         <div class="eyebrow">${job.folder ? esc(job.folder) : "job"}</div>
         <h1>${esc(job.name)}</h1>
         ${job.description ? `<div class="muted small">${esc(job.description)}</div>` : ""}
+        <div class="muted small vis">${visibility}</div>
         <div class="cmdline"><span class="prompt">$</span> ${esc(job.command)}
           <span class="chip">${esc(job.image)}</span><span class="chip">⏱ ${job.timeout}s</span><span class="chip">${job.memory_mb} MB</span></div>
       </div>
@@ -619,7 +627,7 @@ async function viewJob(id, tab = "repos") {
   if (tab !== "repos") every(3000, async () => renderStats((await api(`/jobs/${id}`)).repos));
   const el = document.getElementById("tab");
   if (tab === "files") return tabFiles(job, el);
-  if (tab === "settings" && canWrite()) return tabSettings(job, el);
+  if (tab === "settings" && canWrite() && job.access === "owner") return tabSettings(job, el);
   return tabRepos(job, el);
 }
 
@@ -662,7 +670,7 @@ function tabRepos(job, el) {
       <thead><tr><th>Student</th><th>Status</th><th>Score</th><th>Commit</th><th>Time</th><th>Date</th><th></th></tr></thead>
       <tbody id="rows"></tbody>
     </table></div>
-    <section class="card add w">
+    <section class="card add w own">
       <form id="sync" class="settings" style="max-width:none">
         <div class="eyebrow">repositories from GitHub</div>
         <div class="row">
@@ -673,7 +681,7 @@ function tabRepos(job, el) {
           <span class="muted small">Builds the list, then refreshes it on every press. A name you edited by hand is never overwritten.</span></div>
       </form>
     </section>
-    <details class="card add w">
+    <details class="card add w own">
       <summary>+ add repositories by hand</summary>
       <form id="add">
         <p class="muted small">One repository per line (.txt / .csv file or pasted below). Other words on the line become the display name.<br>
@@ -705,8 +713,8 @@ function tabRepos(job, el) {
           ${isActive(r.status)
             ? `<button class="icon" data-act="cancel" title="cancel">${ico("stop", 15)}</button>`
             : `<button class="icon" data-act="run" title="run">${ico("play", 15)}</button>`}
-          <button class="icon" data-act="rename" title="rename">${ico("pencil", 15)}</button>
-          <button class="icon danger" data-act="del" title="delete">${ico("trash", 15)}</button>
+          <button class="icon own" data-act="rename" title="rename">${ico("pencil", 15)}</button>
+          <button class="icon danger own" data-act="del" title="delete">${ico("trash", 15)}</button>
         </td>
       </tr>`).join("") || `<tr><td colspan="7" class="muted" style="text-align:center;padding:28px">No repositories — add them below.</td></tr>`;
     renderStats(repos);
@@ -804,15 +812,15 @@ function tabFiles(job, el) {
     <div class="files">
       <aside class="card">
         <ul id="flist"></ul>
-        <form id="newfile" class="inline w"><input name="name" placeholder="new file (e.g. tests.sh)" required><button class="btn">+</button></form>
-        <label class="btn upload w">⤒ upload files<input type="file" id="up" multiple hidden></label>
+        <form id="newfile" class="inline w own"><input name="name" placeholder="new file (e.g. tests.sh)" required><button class="btn">+</button></form>
+        <label class="btn upload w own">⤒ upload files<input type="file" id="up" multiple hidden></label>
         <p class="muted small">Mounted read-only in <code>/tests</code>. The student's repository is in <code>/work</code> (current directory).
         Print <code>AGORA_SCORE: 7/10</code> to fill the score column.</p>
       </aside>
       <section class="card editor">
         <div class="toolbar"><span id="fname" class="muted">← pick a file</span><span class="grow"></span>
-          <button class="btn primary w" id="save" disabled>enregistrer (ctrl+s)</button>
-          <button class="btn danger w" id="delf" disabled>delete</button></div>
+          <button class="btn primary w own" id="save" disabled>save (ctrl+s)</button>
+          <button class="btn danger w own" id="delf" disabled>delete</button></div>
         <textarea id="content" spellcheck="false" disabled></textarea>
       </section>
     </div>`;
@@ -820,6 +828,7 @@ function tabFiles(job, el) {
   const ta = document.getElementById("content");
   const save = document.getElementById("save");
   const delf = document.getElementById("delf");
+  const locked = job.access === "shared";
   let files = job.files, current = null, dirty = false;
 
   const renderList = () => {
@@ -836,14 +845,14 @@ function tabFiles(job, el) {
     document.getElementById("fname").textContent = name;
     ta.value = f.binary ? "(binary file — not editable)" : f.content;
     ta.disabled = f.binary;
-    ta.readOnly = !canWrite();
+    ta.readOnly = !canWrite() || locked;
     save.disabled = f.binary;
     delf.disabled = false;
     renderList();
   };
 
   const doSave = async () => {
-    if (!current || ta.disabled || !canWrite()) return;
+    if (!current || ta.disabled || !canWrite() || locked) return;
     await api(`/jobs/${job.id}/files/${encodeURI(current)}`, { method: "PUT", json: { content: ta.value } });
     dirty = false;
     toast(`${current} saved`, "ok");
@@ -914,7 +923,29 @@ function tabSettings(job, el) {
         <button type="button" class="btn" id="dup">duplicate job</button>
         <button type="button" class="btn danger" id="del">delete job</button>
       </div>
-    </form>`;
+    </form>
+    <section class="card settings" id="share">
+      <div class="eyebrow">sharing</div>
+      <p class="muted small">New jobs are private: only you and the admins can see them. Pick who else can see this one.
+        People you share with can browse results and launch builds with their own SSH key; only you can edit or delete the job.</p>
+      <div id="people" class="people muted small">loading…</div>
+      <div class="toolbar"><button class="btn primary" id="saveshare" disabled>save sharing</button></div>
+    </section>`;
+  api("/directory").then((people) => {
+    const box = document.getElementById("people");
+    const on = new Set(job.shares || []);
+    box.className = "people";
+    box.innerHTML = people.map((u) => `<label class="pick"><input type="checkbox" value="${u.id}" ${on.has(u.id) ? "checked" : ""}>${avatar(u.username)}<span>${esc(u.username)}</span><span class="muted small">${ROLE_LABEL[u.role]}</span></label>`).join("")
+      || `<span class="muted small">No other users yet.</span>`;
+    document.getElementById("saveshare").disabled = false;
+  }).catch((err) => { if (!(err instanceof Unauthorized)) toast(err.message, "ko"); });
+  document.getElementById("saveshare").addEventListener("click", async () => {
+    const ids = [...document.querySelectorAll("#people input:checked")].map((i) => +i.value);
+    try {
+      await api(`/jobs/${job.id}/shares`, { method: "PUT", json: { user_ids: ids } });
+      toast("Sharing saved", "ok");
+    } catch (err) { toast(err.message, "ko"); }
+  });
   const f = document.getElementById("s");
   f.addEventListener("submit", async (e) => {
     e.preventDefault();
