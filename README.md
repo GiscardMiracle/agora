@@ -30,7 +30,7 @@ FastAPI (1 process) ── SQLite (data/agora.db)
     Sorties attendues calculées par `ref.py`. Uploader `tests.sh` et `ref.py`. Timeout conseillé : 300 s.
   - [`examples/c-functions/`](examples/c-functions) : compile `main.c` avec des fichiers de l'étudiant (exercices de fonctions C).
 
-## Liste de dépôts (upload `.txt` / `.csv` ou copier-coller)
+## Liste de dépôts
 
 Un dépôt par ligne ; les autres mots de la ligne deviennent le nom affiché. Lignes invalides signalées.
 
@@ -40,8 +40,39 @@ git@github.com:my-org/day06-marie.curie.git
 github.com/my-org/day06-alan.turing
 ```
 
-Dépôts privés : soit `AGORA_GITHUB_TOKEN` (URLs https), soit une clé SSH de l'utilisateur `agora`
-ajoutée à ton compte GitHub (URLs `git@`).
+### Depuis GitHub (bouton *add repositories*)
+
+Dans l'onglet *Dépôts* d'un job, renseigne l'organisation et un pattern (glob `day06-*`, ou `re:` + regex).
+*add repositories* crée la liste ; le même bouton (*update repositories*) la met à jour : nouveaux dépôts ajoutés,
+dépôts disparus retirés. Un pattern qui ne trouve rien ne modifie jamais la liste.
+Chaque groupe est nommé d'après les emails des auteurs des commits (filtrés par `AGORA_EMAIL_DOMAIN`), ou d'après le
+numéro du dépôt s'il n'y a aucun commit. Le crayon ✎ renomme à la main ; un nom modifié n'est plus jamais écrasé.
+Nécessite `AGORA_GITHUB_TOKEN` (lecture seule) pour interroger l'API.
+
+### Clonage : une clé SSH par correcteur
+
+Les dépôts sont clonés **en SSH avec la clé du compte qui lance le build** (URLs converties en `git@github.com:`).
+Chaque utilisateur génère sa clé dans *mon compte* (la clé privée reste dans `data/keys/`, mode 0600) puis ajoute la
+clé publique sur GitHub. Sans clé, lancer un job renvoie une erreur immédiate. Supprimer un compte supprime sa clé.
+
+### Limite de lancements
+
+Chaque non-admin dispose de 15 lancements **au total** (ajustable par l'admin dans *Utilisateurs*, compteur
+remis à zéro avec ↺). Un lancement = un clic sur ▶ (dépôt seul, tout, ou filtre), quel que soit le nombre de dépôts.
+
+## Archives et purge
+
+*⤓ archive* exporte tout l'historique d'un job en ZIP (`builds.csv` + `logs/<dépôt>/<build>.log`).
+Les builds terminés de plus de `AGORA_RETENTION_DAYS` (90) jours sont supprimés automatiquement, logs compris.
+
+## Dossiers
+
+Les jobs peuvent être rangés dans des dossiers imbriqués (`C/week-1`) : créer un dossier depuis la liste,
+ou renseigner le champ *Dossier* dans les paramètres d'un job. ✎ renomme/déplace un dossier, ✕ le supprime (s'il est vide).
+
+## Thème
+
+Bouton ☀/☾ en haut à droite (clair / sombre, mémorisé dans le navigateur).
 
 ## Comptes
 
