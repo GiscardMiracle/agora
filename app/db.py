@@ -17,6 +17,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     updated_at  REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS folders (
+    path TEXT PRIMARY KEY   -- "C/week-1": every ancestor has its own row too
+);
+
 CREATE TABLE IF NOT EXISTS job_files (
     id      INTEGER PRIMARY KEY,
     job_id  INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -100,12 +104,33 @@ def tx():
         conn.close()
 
 
+# Columns added after the first release: (table, column, definition).
+MIGRATIONS = [
+    ("users", "launch_limit", "INTEGER NOT NULL DEFAULT 15"),
+    ("users", "launch_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("users", "ssh_public_key", "TEXT"),
+    ("builds", "user_id", "INTEGER"),
+    ("jobs", "folder", "TEXT NOT NULL DEFAULT ''"),
+    ("jobs", "github_org", "TEXT NOT NULL DEFAULT ''"),
+    ("jobs", "repo_pattern", "TEXT NOT NULL DEFAULT ''"),
+    ("repos", "renamed", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+
+def _migrate(conn: Conn) -> None:
+    for table, column, definition in MIGRATIONS:
+        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init() -> None:
     config.ensure_dirs()
     conn = _connect()
     try:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA)
+        _migrate(conn)
     finally:
         conn.close()
 

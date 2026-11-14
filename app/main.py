@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import io
 import logging
@@ -16,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import config, db, repos, users
+from . import archive, config, db, github, keys, repos, users
 from .runner import Runner, log_path, remove_logs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -44,7 +45,9 @@ async def lifespan(_: FastAPI):
     db.init()
     users.bootstrap()
     await runner.start()
+    purger = asyncio.create_task(archive.purge_loop())
     yield
+    purger.cancel()
     await runner.stop()
 
 
@@ -61,7 +64,7 @@ def current_user(request: Request) -> dict | None:
     if uid is None:
         return None
     with db.tx() as c:
-        u = db.row(c, "SELECT id, username, role, session_version FROM users WHERE id=?", uid)
+        u = db.row(c, "SELECT id, username, role, session_version, launch_limit, launch_count FROM users WHERE id=?", uid)
     return u if u and u["session_version"] == request.session.get("sv") else None
 
 
@@ -105,7 +108,16 @@ def check_file_name(name: str) -> str:
     return name
 
 
-def enqueue(c, job_id: int, repo_ids: list[int]) -> int:
+def enqueue(c, job_id: int, repo_ids: list[int], user: dict) -> int:
+    """Queue builds for `user`. Enforces the SSH key and the launch quota (admins are exempt)."""
+    if not keys.has_key(user["id"]):
+        raise HTTPException(400, "You have no SSH key, so repositories cannot be cloned. "
+                                 "Generate one in \"Account\" and add it to GitHub.")
+    if user["role"] != "admin":
+        fresh = db.row(c, "SELECT launch_limit, launch_count FROM users WHERE id=?", user["id"])
+        if not fresh or fresh["launch_count"] >= fresh["launch_limit"]:
+            raise HTTPException(403, f"Launch limit reached ({fresh['launch_limit'] if fresh else 0}). "
+                                     "Ask the admin to raise it.")
     busy = {
         r["repo_id"] for r in db.rows(
             c, "SELECT repo_id FROM builds WHERE job_id=? AND status IN ('queued','running')", job_id
@@ -116,10 +128,12 @@ def enqueue(c, job_id: int, repo_ids: list[int]) -> int:
         if rid in busy:
             continue
         c.execute(
-            "INSERT INTO builds (job_id, repo_id, status, queued_at) VALUES (?, ?, 'queued', ?)",
-            job_id, rid, db.now(),
+            "INSERT INTO builds (job_id, repo_id, status, queued_at, user_id) VALUES (?, ?, 'queued', ?, ?)",
+            job_id, rid, db.now(), user["id"],
         )
         n += 1
+    if n and user["role"] != "admin":
+        c.execute("UPDATE users SET launch_count=launch_count+1 WHERE id=?", user["id"])
     return n
 
 
@@ -135,7 +149,11 @@ class Login(BaseModel):
 
 
 def public_user(u: dict) -> dict:
-    return {"id": u["id"], "username": u["username"], "role": u["role"]}
+    out = {"id": u["id"], "username": u["username"], "role": u["role"], "has_key": keys.has_key(u["id"])}
+    if "launch_limit" in u:
+        out["launch_limit"] = u["launch_limit"]
+        out["launch_count"] = u["launch_count"]
+    return out
 
 
 def open_session(request: Request, user_id: int, session_version: int) -> None:
@@ -169,6 +187,34 @@ def me(request: Request):
     return {"user": public_user(u) if u else None}
 
 
+@public.get("/me/ssh-key")
+def get_ssh_key(user: dict = Depends(require_auth)):
+    with db.tx() as c:
+        u = db.row(c, "SELECT ssh_public_key FROM users WHERE id=?", user["id"])
+    has = keys.has_key(user["id"])
+    return {"has_key": has, "public_key": u["ssh_public_key"] if has else None}
+
+
+@public.post("/me/ssh-key")
+def generate_ssh_key(user: dict = Depends(require_auth)):
+    """(Re)generate the key. The previous one stops working as soon as this returns."""
+    try:
+        pub = keys.generate(user["id"], user["username"])
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+    with db.tx() as c:
+        c.execute("UPDATE users SET ssh_public_key=? WHERE id=?", pub, user["id"])
+    return {"has_key": True, "public_key": pub}
+
+
+@public.delete("/me/ssh-key")
+def remove_ssh_key(user: dict = Depends(require_auth)):
+    keys.delete(user["id"])
+    with db.tx() as c:
+        c.execute("UPDATE users SET ssh_public_key=NULL WHERE id=?", user["id"])
+    return {"ok": True}
+
+
 class PasswordChange(BaseModel):
     current: str
     new: str = Field(min_length=users.MIN_PASSWORD, max_length=200)
@@ -179,7 +225,7 @@ def change_password(body: PasswordChange, request: Request, user: dict = Depends
     with db.tx() as c:
         stored = db.row(c, "SELECT password_hash FROM users WHERE id=?", user["id"])["password_hash"]
     if not users.verify_password(body.current, stored):
-        raise HTTPException(400, "mot de passe actuel incorrect")
+        raise HTTPException(400, "current password is incorrect")
     new_hash = users.hash_password(body.new)
     with db.tx() as c:
         c.execute(
@@ -207,12 +253,17 @@ class UserIn(BaseModel):
 class UserPatch(BaseModel):
     role: Role | None = None
     password: Password | None = None
+    launch_limit: int | None = Field(default=None, ge=0, le=100000)
+    reset_count: bool = False
 
 
 @admin.get("")
 def list_users():
     with db.tx() as c:
-        return db.rows(c, "SELECT id, username, role, created_at, last_login FROM users ORDER BY username COLLATE NOCASE")
+        rows = db.rows(c, "SELECT id, username, role, created_at, last_login, launch_limit, launch_count FROM users ORDER BY username COLLATE NOCASE")
+    for r in rows:
+        r["has_key"] = keys.has_key(r["id"])
+    return rows
 
 
 @admin.post("")
@@ -226,19 +277,23 @@ def create_user(body: UserIn):
             )
             return {"id": cur.lastrowid}
     except sqlite3.IntegrityError:
-        raise HTTPException(409, "ce nom d'utilisateur existe déjà")
+        raise HTTPException(409, "this username already exists")
 
 
 @admin.patch("/{user_id}")
 def update_user(user_id: int, body: UserPatch, me: dict = Depends(require_admin)):
     # An admin cannot demote or delete themselves, so there is always at least one admin left.
     if user_id == me["id"] and body.role not in (None, "admin"):
-        raise HTTPException(400, "tu ne peux pas changer ton propre rôle")
+        raise HTTPException(400, "you cannot change your own role")
     password_hash = users.hash_password(body.password) if body.password else None
     with db.tx() as c:
         get_or_404(c, "SELECT id FROM users WHERE id=?", user_id)
         if body.role:
             c.execute("UPDATE users SET role=? WHERE id=?", body.role, user_id)
+        if body.launch_limit is not None:
+            c.execute("UPDATE users SET launch_limit=? WHERE id=?", body.launch_limit, user_id)
+        if body.reset_count:
+            c.execute("UPDATE users SET launch_count=0 WHERE id=?", user_id)
         if password_hash:
             c.execute(
                 "UPDATE users SET password_hash=?, session_version=session_version+1 WHERE id=?",
@@ -250,15 +305,38 @@ def update_user(user_id: int, body: UserPatch, me: dict = Depends(require_admin)
 @admin.delete("/{user_id}")
 def delete_user(user_id: int, me: dict = Depends(require_admin)):
     if user_id == me["id"]:
-        raise HTTPException(400, "tu ne peux pas supprimer ton propre compte")
+        raise HTTPException(400, "you cannot delete your own account")
     with db.tx() as c:
         c.execute("DELETE FROM users WHERE id=?", user_id)
+    keys.delete(user_id)
     return {"ok": True}
 
 
 # ---------------- jobs ----------------
 
+FOLDER_SEGMENT = re.compile(r"^[\w][\w .+-]{0,59}$")
+MAX_DEPTH = 6
+
+
+def clean_folder(path: str) -> str:
+    """'C / week-1/' -> 'C/week-1'. Empty string is the root."""
+    parts = [p.strip() for p in path.replace("\\", "/").split("/") if p.strip()]
+    if len(parts) > MAX_DEPTH:
+        raise HTTPException(400, f"nested folders: {MAX_DEPTH} levels maximum")
+    for p in parts:
+        if not FOLDER_SEGMENT.match(p) or p in (".", ".."):
+            raise HTTPException(400, f"invalid folder name: {p!r}")
+    return "/".join(parts)
+
+
+def ensure_folder(c, path: str) -> None:
+    parts = path.split("/") if path else []
+    for i in range(1, len(parts) + 1):
+        c.execute("INSERT OR IGNORE INTO folders (path) VALUES (?)", "/".join(parts[:i]))
+
+
 class JobIn(BaseModel):
+    folder: str = ""
     name: str = Field(min_length=1, max_length=120)
     description: str = ""
     image: str = Field(default=config.DEFAULT_IMAGE, min_length=1)
@@ -286,12 +364,14 @@ def list_jobs():
 
 @api.post("/jobs")
 def create_job(body: JobIn):
+    folder = clean_folder(body.folder)
     with db.tx() as c:
+        ensure_folder(c, folder)
         cur = c.execute(
-            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, folder, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             body.name.strip(), body.description, body.image.strip(), body.command,
-            body.timeout, body.memory_mb, db.now(), db.now(),
+            body.timeout, body.memory_mb, folder, db.now(), db.now(),
         )
         return {"id": cur.lastrowid}
 
@@ -316,13 +396,15 @@ def get_job(job_id: int):
 
 @api.put("/jobs/{job_id}")
 def update_job(job_id: int, body: JobIn):
+    folder = clean_folder(body.folder)
     with db.tx() as c:
         get_or_404(c, "SELECT id FROM jobs WHERE id=?", job_id)
+        ensure_folder(c, folder)
         c.execute(
-            "UPDATE jobs SET name=?, description=?, image=?, command=?, timeout=?, memory_mb=?, updated_at=? "
+            "UPDATE jobs SET name=?, description=?, image=?, command=?, timeout=?, memory_mb=?, folder=?, updated_at=? "
             "WHERE id=?",
             body.name.strip(), body.description, body.image.strip(), body.command,
-            body.timeout, body.memory_mb, db.now(), job_id,
+            body.timeout, body.memory_mb, folder, db.now(), job_id,
         )
     return {"ok": True}
 
@@ -332,10 +414,10 @@ def duplicate_job(job_id: int):
     with db.tx() as c:
         j = get_or_404(c, "SELECT * FROM jobs WHERE id=?", job_id)
         cur = c.execute(
-            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, folder, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             f"{j['name']} (copy)", j["description"], j["image"], j["command"],
-            j["timeout"], j["memory_mb"], db.now(), db.now(),
+            j["timeout"], j["memory_mb"], j["folder"], db.now(), db.now(),
         )
         c.execute(
             "INSERT INTO job_files (job_id, name, content) SELECT ?, name, content FROM job_files WHERE job_id=?",
@@ -354,6 +436,75 @@ def delete_job(job_id: int):
         ids = [r["id"] for r in db.rows(c, "SELECT id FROM builds WHERE job_id=?", job_id)]
         c.execute("DELETE FROM jobs WHERE id=?", job_id)
     remove_logs(ids)
+    return {"ok": True}
+
+
+# ---------------- folders ----------------
+
+class FolderIn(BaseModel):
+    path: str
+
+
+class FolderMove(BaseModel):
+    src: str
+    dst: str
+
+
+@api.get("/folders")
+def list_folders():
+    with db.tx() as c:
+        paths = {r["path"] for r in db.rows(c, "SELECT path FROM folders")}
+        paths |= {r["folder"] for r in db.rows(c, "SELECT DISTINCT folder FROM jobs WHERE folder != ''")}
+    full = set()
+    for p in paths:  # ancestors of a job folder created before folders existed
+        parts = p.split("/")
+        full |= {"/".join(parts[:i]) for i in range(1, len(parts) + 1)}
+    return sorted(full, key=str.lower)
+
+
+@api.post("/folders")
+def create_folder(body: FolderIn):
+    path = clean_folder(body.path)
+    if not path:
+        raise HTTPException(400, "empty folder name")
+    with db.tx() as c:
+        ensure_folder(c, path)
+    return {"path": path}
+
+
+@api.post("/folders/move")
+def move_folder(body: FolderMove):
+    """Rename or move a folder together with everything inside it."""
+    src, dst = clean_folder(body.src), clean_folder(body.dst)
+    if not src or not dst:
+        raise HTTPException(400, "empty path")
+    if dst == src:
+        return {"path": dst}
+    if dst.startswith(src + "/"):
+        raise HTTPException(400, "cannot move a folder into itself")
+    like = src.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
+    with db.tx() as c:
+        existing = {r["path"] for r in db.rows(c, "SELECT path FROM folders")}
+        if dst in existing:
+            raise HTTPException(409, "a folder with this name already exists")
+        ensure_folder(c, "/".join(dst.split("/")[:-1]))
+        c.execute("UPDATE folders SET path = ? || substr(path, ?) WHERE path = ? OR path LIKE ? ESCAPE '\\'",
+                  dst, len(src) + 1, src, like)
+        c.execute("UPDATE jobs SET folder = ? || substr(folder, ?) WHERE folder = ? OR folder LIKE ? ESCAPE '\\'",
+                  dst, len(src) + 1, src, like)
+        ensure_folder(c, dst)
+    return {"path": dst}
+
+
+@api.delete("/folders")
+def delete_folder(path: str):
+    path = clean_folder(path)
+    like = path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
+    with db.tx() as c:
+        busy = db.row(c, "SELECT id FROM jobs WHERE folder = ? OR folder LIKE ? ESCAPE '\\' LIMIT 1", path, like)
+        if busy:
+            raise HTTPException(409, "this folder contains jobs: move or delete them first")
+        c.execute("DELETE FROM folders WHERE path = ? OR path LIKE ? ESCAPE '\\'", path, like)
     return {"ok": True}
 
 
@@ -429,6 +580,66 @@ async def add_repos(job_id: int, text: str = Form(""), file: UploadFile | None =
     return {"added": added, "duplicates": len(entries) - added, "rejected": rejected}
 
 
+class SyncIn(BaseModel):
+    org: str = ""
+    pattern: str = ""
+
+
+@api.post("/jobs/{job_id}/repos/sync")
+def sync_repos(job_id: int, body: SyncIn):
+    """Create or refresh the repository list from GitHub. Remembers org + pattern for the next press."""
+    with db.tx() as c:
+        job = get_or_404(c, "SELECT id, github_org, repo_pattern FROM jobs WHERE id=?", job_id)
+    org = body.org.strip() or job["github_org"]
+    pattern = body.pattern.strip() or job["repo_pattern"]
+    if not org or not pattern:
+        raise HTTPException(400, "Enter the GitHub organization and a pattern (e.g. day06-*).")
+    try:
+        names = github.list_repos(org, pattern)
+        with db.tx() as c:
+            known = {r["url"]: r for r in db.rows(c, "SELECT id, url, name, renamed FROM repos WHERE job_id=?", job_id)}
+        if not names:
+            raise HTTPException(409, "No repository matches this pattern: nothing was changed.")
+        # Names (commit authors) are only fetched for new repos and for ones nobody renamed by hand.
+        urls = {n: f"git@github.com:{org}/{n}.git" for n in names}
+        to_name = [n for n in names if urls[n] not in known or not known[urls[n]]["renamed"]]
+        titles = github.names_for(org, to_name)
+    except github.GitHubError as e:
+        raise HTTPException(502, str(e))
+    added = updated = 0
+    gone = []
+    with db.tx() as c:
+        c.execute("UPDATE jobs SET github_org=?, repo_pattern=?, updated_at=? WHERE id=?", org, pattern, db.now(), job_id)
+        current = {r["url"]: r for r in db.rows(c, "SELECT id, url, name, renamed FROM repos WHERE job_id=?", job_id)}
+        wanted = set(urls.values())
+        for n in names:
+            u = urls[n]
+            if u not in current:
+                c.execute("INSERT INTO repos (job_id, name, url, created_at) VALUES (?, ?, ?, ?)", job_id, titles[n], u, db.now())
+                added += 1
+            elif not current[u]["renamed"] and current[u]["name"] != titles[n]:
+                c.execute("UPDATE repos SET name=? WHERE id=?", titles[n], current[u]["id"])
+                updated += 1
+        for u, r in current.items():
+            if u not in wanted:
+                gone.append(r["id"])
+    for rid in gone:
+        delete_repo(rid)
+    return {"added": added, "updated": updated, "removed": len(gone), "total": len(names)}
+
+
+class RepoPatch(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+@api.patch("/repos/{repo_id}")
+def rename_repo(repo_id: int, body: RepoPatch):
+    with db.tx() as c:
+        get_or_404(c, "SELECT id FROM repos WHERE id=?", repo_id)
+        c.execute("UPDATE repos SET name=?, renamed=1 WHERE id=?", body.name.strip(), repo_id)
+    return {"ok": True}
+
+
 @api.delete("/repos/{repo_id}")
 def delete_repo(repo_id: int):
     with db.tx() as c:
@@ -457,19 +668,19 @@ class RunIn(BaseModel):
 
 
 @api.post("/jobs/{job_id}/run")
-def run_job(job_id: int, body: RunIn):
+def run_job(job_id: int, body: RunIn, user: dict = Depends(require_auth)):
     with db.tx() as c:
         get_or_404(c, "SELECT id FROM jobs WHERE id=?", job_id)
         all_ids = [r["id"] for r in db.rows(c, "SELECT id FROM repos WHERE job_id=? ORDER BY name COLLATE NOCASE", job_id)]
         ids = all_ids if body.repo_ids is None else [i for i in body.repo_ids if i in set(all_ids)]
-        return {"queued": enqueue(c, job_id, ids)}
+        return {"queued": enqueue(c, job_id, ids, user)}
 
 
 @api.post("/repos/{repo_id}/run")
-def run_repo(repo_id: int):
+def run_repo(repo_id: int, user: dict = Depends(require_auth)):
     with db.tx() as c:
         r = get_or_404(c, "SELECT job_id FROM repos WHERE id=?", repo_id)
-        queued = enqueue(c, r["job_id"], [repo_id])
+        queued = enqueue(c, r["job_id"], [repo_id], user)
         last = db.row(c, "SELECT MAX(id) AS id FROM builds WHERE repo_id=?", repo_id)
         return {"queued": queued, "build_id": last["id"]}
 
@@ -531,6 +742,17 @@ def export_csv(job_id: int):
     safe = re.sub(r"[^\w.-]+", "_", job["name"]) or "job"
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="{safe}.csv"'})
+
+
+@api.get("/jobs/{job_id}/archive.zip")
+def export_archive(job_id: int):
+    """Full history (CSV + raw logs) as a ZIP, to keep before the automatic purge."""
+    try:
+        filename, data = archive.build_zip(job_id)
+    except KeyError:
+        raise HTTPException(404, "not found")
+    return Response(data, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 app.include_router(public)

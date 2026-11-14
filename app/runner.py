@@ -8,7 +8,6 @@ real terminal) and is appended to data/logs/<build_id>.log, which the UI polls.
 """
 
 import asyncio
-import base64
 import logging
 import os
 import re
@@ -17,7 +16,15 @@ import signal
 import subprocess
 from pathlib import Path
 
-from . import config, db
+from . import config, db, keys
+
+_HTTPS_GH = re.compile(r"^https://github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
+
+
+def _ssh_url(url: str) -> str:
+    """Per-user keys only work over SSH: rewrite legacy https URLs."""
+    m = _HTTPS_GH.match(url)
+    return f"git@github.com:{m[1]}/{m[2]}.git" if m else url
 
 log = logging.getLogger("agora.runner")
 
@@ -193,7 +200,7 @@ class Runner:
         with db.tx() as c:
             b = db.row(
                 c,
-                "SELECT b.id, b.job_id, b.repo_id, r.url, r.name AS repo_name, j.name AS job_name, "
+                "SELECT b.id, b.job_id, b.repo_id, b.user_id, r.url, r.name AS repo_name, j.name AS job_name, "
                 "j.image, j.command, j.timeout, j.memory_mb "
                 "FROM builds b JOIN repos r ON r.id=b.repo_id JOIN jobs j ON j.id=b.job_id "
                 "WHERE b.status='queued' ORDER BY b.id LIMIT 1",
@@ -262,22 +269,25 @@ class Runner:
             out.meta(f"build #{bid} · {b['job_name']} · {b['repo_name']}")
 
             # 1. clone on the host (network needed, student code not executed yet)
+            url = _ssh_url(b["url"])
+            if not b["user_id"] or not keys.has_key(b["user_id"]):
+                msg = "no SSH key for the user who launched this build (deleted account or key removed)"
+                out.meta(f"{C_KO}{msg}{C_RESET}")
+                self._finish(b, "error", error=msg)
+                return
             git = ["git"]
-            if config.GITHUB_TOKEN and b["url"].startswith("https://github.com/"):
-                cred = base64.b64encode(f"x-access-token:{config.GITHUB_TOKEN}".encode()).decode()
-                git += ["-c", f"http.https://github.com/.extraheader=AUTHORIZATION: basic {cred}"]
             env = {
                 **os.environ,
                 "GIT_TERMINAL_PROMPT": "0",
-                "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
+                "GIT_SSH_COMMAND": keys.ssh_command(b["user_id"]),
             }
-            out.cmd(f"git clone --depth 1 {b['url']}")
+            out.cmd(f"git clone --depth 1 {url}")
             rc, timed_out = await self._stream(
-                [*git, "clone", "--depth", "1", "--no-tags", b["url"], repo_dir.name],
+                [*git, "clone", "--depth", "1", "--no-tags", url, repo_dir.name],
                 out, config.CLONE_TIMEOUT, env=env, cwd=work,
             )
             if timed_out or rc != 0:
-                msg = "clone timed out" if timed_out else "clone failed (bad URL or no access?)"
+                msg = "clone timed out" if timed_out else "clone failed (bad URL, or your SSH key is not registered on GitHub / has no access)"
                 out.meta(f"{C_KO}{msg}{C_RESET}")
                 self._finish(b, "error", error=msg)
                 return

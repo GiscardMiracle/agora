@@ -14,7 +14,7 @@ def normalize(token: str) -> tuple[str, str] | None:
     if m := _SSH.match(token):
         return f"git@github.com:{m[1]}/{m[2]}.git", m[2]
     if m := _HTTPS.match(token):
-        return f"https://github.com/{m[1]}/{m[2]}.git", m[2]
+        return f"git@github.com:{m[1]}/{m[2]}.git", m[2]
     return None
 
 
