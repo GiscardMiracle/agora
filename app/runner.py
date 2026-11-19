@@ -14,6 +14,7 @@ import re
 import shutil
 import signal
 import subprocess
+import time
 from pathlib import Path
 
 from . import config, db, keys
@@ -28,6 +29,7 @@ def _ssh_url(url: str) -> str:
 
 log = logging.getLogger("agora.runner")
 
+CLONE_ATTEMPTS = 3
 KEEP_BUILDS_PER_REPO = int(os.environ.get("AGORA_KEEP_BUILDS", 20))
 SCORE_RE = re.compile(rb"AGORA_SCORE:\s*([^\r\n]{1,40})")
 ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
@@ -80,11 +82,16 @@ class LogWriter:
         self.redact = [r.encode() for r in redact if r]
         self._line = b""
         self.score: str | None = None
+        self._tail = b""
+
+    def saw(self, needle: bytes) -> bool:
+        return needle in self._tail
 
     def write(self, data: bytes) -> None:
         for secret in self.redact:
             data = data.replace(secret, b"********")
         self._scan_score(data)
+        self._tail = (self._tail + data)[-4096:]
         if self.truncated:
             return
         room = config.MAX_LOG_BYTES - self.size
@@ -174,12 +181,15 @@ class Runner:
         subprocess.run(["docker", "kill", container_name(build_id)], capture_output=True, check=False)
         return True
 
+    async def _done(self, build: dict, status: str, **fields) -> None:
+        await asyncio.to_thread(self._finish, build, status, **fields)
+
     # ---------- worker ----------
 
     async def _loop(self, worker: int) -> None:
         while True:
             try:
-                build = self._claim()
+                build = await asyncio.to_thread(self._claim)
             except Exception:
                 log.exception("claim failed")
                 build = None
@@ -192,11 +202,14 @@ class Runner:
                 raise
             except Exception as e:
                 log.exception("build %s crashed", build["id"])
-                self._finish(build, "error", error=f"internal error: {e}")
+                await asyncio.to_thread(self._finish, build, "error", error=f"internal error: {e}")
             finally:
                 self._cancelled.discard(build["id"])
 
     def _claim(self) -> dict | None:
+        with db.read() as c:
+            if not c.execute("SELECT 1 FROM builds WHERE status='queued' LIMIT 1").fetchone():
+                return None
         with db.tx() as c:
             b = db.row(
                 c,
@@ -261,7 +274,7 @@ class Runner:
         bid = b["id"]
         work = config.WORK_DIR / str(bid)
         repo_dir, tests_dir = work / "repo", work / "tests"
-        _rmtree(work)
+        await asyncio.to_thread(_rmtree, work)
         tests_dir.mkdir(parents=True)
         out = LogWriter(log_path(bid), redact=[config.GITHUB_TOKEN])
         sha = None
@@ -273,7 +286,7 @@ class Runner:
             if not b["user_id"] or not keys.has_key(b["user_id"]):
                 msg = "no SSH key for the user who launched this build (deleted account or key removed)"
                 out.meta(f"{C_KO}{msg}{C_RESET}")
-                self._finish(b, "error", error=msg)
+                await self._done(b, "error", error=msg)
                 return
             git = ["git"]
             env = {
@@ -282,17 +295,28 @@ class Runner:
                 "GIT_SSH_COMMAND": keys.ssh_command(b["user_id"]),
             }
             out.cmd(f"git clone --depth 1 {url}")
-            rc, timed_out = await self._stream(
-                [*git, "clone", "--depth", "1", "--no-tags", url, repo_dir.name],
-                out, config.CLONE_TIMEOUT, env=env, cwd=work,
-            )
+            rc, timed_out = None, False
+            t0 = time.monotonic()
+            for attempt in range(1, CLONE_ATTEMPTS + 1):
+                if attempt > 1:
+                    out.meta(f"{C_WARN}retrying the clone ({attempt}/{CLONE_ATTEMPTS}){C_RESET}")
+                    await asyncio.to_thread(_rmtree, repo_dir)
+                    await asyncio.sleep(2 * (attempt - 1))
+                rc, timed_out = await self._stream(
+                    [*git, "clone", "--depth", "1", "--no-tags", "--single-branch", url, repo_dir.name],
+                    out, config.CLONE_TIMEOUT, env=env, cwd=work,
+                )
+                # A refused key will not get better by retrying; a network hiccup or a slow GitHub will.
+                if not timed_out and rc == 0 or (rc == 128 and out.saw(b"Permission denied")):
+                    break
             if timed_out or rc != 0:
                 msg = "clone timed out" if timed_out else "clone failed (bad URL, or your SSH key is not registered on GitHub / has no access)"
                 out.meta(f"{C_KO}{msg}{C_RESET}")
-                self._finish(b, "error", error=msg)
+                await self._done(b, "error", error=msg)
                 return
-            r = subprocess.run(["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
-                               capture_output=True, text=True, check=False)
+            out.meta(f"cloned in {time.monotonic() - t0:.1f}s")
+            r = await asyncio.to_thread(subprocess.run, ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+                                        capture_output=True, text=True, check=False)
             sha = r.stdout.strip() or None
             out.meta(f"commit {C_DIM}{sha or '(empty repository)'}{C_RESET}")
 
@@ -305,7 +329,7 @@ class Runner:
 
             if bid in self._cancelled:
                 out.meta(f"{C_WARN}cancelled{C_RESET}")
-                self._finish(b, "cancelled", commit_sha=sha)
+                await self._done(b, "cancelled", commit_sha=sha)
                 return
 
             # 3. run in the sandbox
@@ -332,26 +356,28 @@ class Runner:
                 )
 
             out.cmd(b["command"])
+            t1 = time.monotonic()
             rc, timed_out = await self._stream(args, out, b["timeout"], on_timeout=kill)
             out.write(b"\r\n")
+            out.meta(f"tests ran in {time.monotonic() - t1:.1f}s")
 
             if bid in self._cancelled:
                 out.meta(f"{C_WARN}cancelled{C_RESET}")
-                self._finish(b, "cancelled", commit_sha=sha, score=out.score)
+                await self._done(b, "cancelled", commit_sha=sha, score=out.score)
             elif timed_out:
                 out.meta(f"{C_KO}TIMEOUT after {b['timeout']}s{C_RESET}")
-                self._finish(b, "timeout", commit_sha=sha, score=out.score)
+                await self._done(b, "timeout", commit_sha=sha, score=out.score)
             elif rc == 125:
                 out.meta(f"{C_KO}docker could not start the container (image '{b['image']}' missing?){C_RESET}")
-                self._finish(b, "error", exit_code=rc, commit_sha=sha, error="docker run failed")
+                await self._done(b, "error", exit_code=rc, commit_sha=sha, error="docker run failed")
             else:
                 if rc == 137:
                     out.meta(f"{C_WARN}killed by SIGKILL — probably exceeded the {mem} memory limit{C_RESET}")
                 color = C_OK if rc == 0 else C_KO
                 out.meta(f"{color}exit code {_exit_label(rc)}{C_RESET}"
                          + (f" · score {out.score}" if out.score else ""))
-                self._finish(b, "success" if rc == 0 else "failed",
+                await self._done(b, "success" if rc == 0 else "failed",
                              exit_code=rc, commit_sha=sha, score=out.score)
         finally:
             out.close()
-            _rmtree(work)
+            await asyncio.to_thread(_rmtree, work)
