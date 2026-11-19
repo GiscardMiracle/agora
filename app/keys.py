@@ -41,7 +41,15 @@ def delete(user_id: int) -> None:
 
 
 def ssh_command(user_id: int) -> str:
+    """ssh for git. One connection per user is kept open and shared by the clones that follow
+    (ControlMaster): the handshake with GitHub is paid once instead of once per repository.
+    IPv4 only: a VPS with a broken IPv6 route otherwise waits for a timeout before falling back."""
+    ctl = config.DATA_DIR / "ssh"
+    ctl.mkdir(exist_ok=True)
+    ctl.chmod(0o700)
     return (
         f"ssh -i {private_path(user_id)} -o IdentitiesOnly=yes -o BatchMode=yes "
-        "-o StrictHostKeyChecking=accept-new"
+        "-o StrictHostKeyChecking=accept-new -o AddressFamily=inet -o ConnectTimeout=15 "
+        "-o ServerAliveInterval=10 -o ServerAliveCountMax=3 "
+        f"-o ControlMaster=auto -o ControlPersist=120 -o ControlPath={ctl}/u{int(user_id)}-%C"
     )
