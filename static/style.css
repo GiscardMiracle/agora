@@ -475,3 +475,11 @@ body[data-access="shared"] .own { display: none !important; }
 .sty-table td { padding: 4px 10px 4px 0; vertical-align: top; border-top: 1px solid var(--line); }
 .sty-table .loc { font-family: var(--mono); white-space: nowrap; color: var(--ink-2); }
 .sty-table .rule { font-family: var(--mono); color: var(--mute); white-space: nowrap; text-align: right; }
+
+.tablewrap { overflow-x: auto; }
+.fail-table { table-layout: fixed; min-width: 640px; }
+.fail-table th:nth-child(1) { width: 34%; }
+.fail-table th:nth-child(2) { width: 130px; }
+.fail-table td { vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
+.who-list { line-height: 1.7; }
+.who-toggle { background: none; border: 0; padding: 0 0 0 6px; color: var(--link, inherit); font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; }

@@ -935,6 +935,20 @@ function tabRepos(job, el) {
   });
 }
 
+const WHO_SHOWN = 12;
+function whoList(items) {
+  if (items.length <= WHO_SHOWN) return items.join(", ");
+  return `${items.slice(0, WHO_SHOWN).join(", ")}<span class="who-more" hidden>, ${items.slice(WHO_SHOWN).join(", ")}</span>
+    <button type="button" class="who-toggle" data-more="${items.length - WHO_SHOWN}">see ${items.length - WHO_SHOWN} more</button>`;
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest?.(".who-toggle");
+  if (!b) return;
+  const more = b.parentElement.querySelector(".who-more");
+  more.hidden = !more.hidden;
+  b.textContent = more.hidden ? `see ${b.dataset.more} more` : "see less";
+});
+
 async function tabFailures(job, el) {
   const { graded, tests } = await api(`/jobs/${job.id}/failures`);
   if (!tests.length) {
@@ -948,7 +962,7 @@ async function tabFailures(job, el) {
       const pct = graded ? Math.round((100 * t.count) / graded) : 0;
       return `<tr><td><div class="muted small">${esc(t.section || "")}</div><div class="name">${esc(t.label)}</div></td>
         <td style="white-space:nowrap"><b>${t.count}</b> <span class="muted small">${pct}%</span><div class="bar"><b style="width:${pct}%"></b></div></td>
-        <td class="small">${t.repos.slice(0, 12).map((r) => `<a href="#/builds/${r.build_id}">${esc(r.name)}</a>`).join(", ")}${t.repos.length > 12 ? ` <span class="muted">+${t.repos.length - 12}</span>` : ""}</td></tr>`;
+        <td class="small who-list">${whoList(t.repos.map((r) => `<a href="#/builds/${r.build_id}">${esc(r.name)}</a>`))}</td></tr>`;
     }).join("")}</tbody></table></div>`;
 }
 
@@ -966,7 +980,7 @@ async function tabStyle(job, el) {
         const pct = Math.round((100 * g.count) / checked);
         return `<tr><td><span class="sev ${g.sev}">${g.sev}</span> <b>${esc(g.rule)}</b><div class="muted small">${esc(g.msg || "")}</div></td>
           <td style="white-space:nowrap"><b>${g.count}</b> <span class="muted small">${pct}% · ${g.total} total</span><div class="bar"><b style="width:${pct}%"></b></div></td>
-          <td class="small">${g.repos.slice(0, 12).map((r) => `<a href="#/builds/${r.build_id}">${esc(r.name)}</a> <span class="muted">×${r.n}</span>`).join(", ")}${g.repos.length > 12 ? ` <span class="muted">+${g.repos.length - 12}</span>` : ""}</td></tr>`;
+          <td class="small who-list">${whoList(g.repos.map((r) => `<a href="#/builds/${r.build_id}">${esc(r.name)}</a> <span class="muted">×${r.n}</span>`))}</td></tr>`;
       }).join("")}</tbody></table></div>`
     : `<p class="muted" style="padding:24px;text-align:center">No violation at all.</p>`);
 }
