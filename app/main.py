@@ -63,7 +63,7 @@ def current_user(request: Request) -> dict | None:
     uid = request.session.get("uid")
     if uid is None:
         return None
-    with db.tx() as c:
+    with db.read() as c:
         u = db.row(c, "SELECT id, username, role, session_version, launch_limit, launch_count FROM users WHERE id=?", uid)
     return u if u and u["session_version"] == request.session.get("sv") else None
 
@@ -151,7 +151,7 @@ def job_access(c, job_id: int, user: dict) -> str | None:
 
 def guard_job(job_id: int, user: dict, owner: bool = False) -> str:
     """404 for a job the user cannot see (its existence is not revealed); 403 if `owner` is required."""
-    with db.tx() as c:
+    with db.read() as c:
         role = job_access(c, job_id, user)
     if role is None:
         raise HTTPException(404, "not found")
@@ -161,7 +161,7 @@ def guard_job(job_id: int, user: dict, owner: bool = False) -> str:
 
 
 def guard_repo(repo_id: int, user: dict, owner: bool = False) -> int:
-    with db.tx() as c:
+    with db.read() as c:
         r = db.row(c, "SELECT job_id FROM repos WHERE id=?", repo_id)
     if not r:
         raise HTTPException(404, "not found")
@@ -170,7 +170,7 @@ def guard_repo(repo_id: int, user: dict, owner: bool = False) -> int:
 
 
 def guard_build(build_id: int, user: dict) -> None:
-    with db.tx() as c:
+    with db.read() as c:
         b = db.row(c, "SELECT job_id FROM builds WHERE id=?", build_id)
     if not b:
         raise HTTPException(404, "not found")
@@ -206,7 +206,7 @@ def open_session(request: Request, user_id: int, session_version: int) -> None:
 
 @public.post("/login")
 def login(body: Login, request: Request):
-    with db.tx() as c:
+    with db.read() as c:
         u = db.row(c, "SELECT * FROM users WHERE username=?", body.username.strip())
     # Hashing is slow on purpose: stay out of the write transaction meanwhile.
     if not users.verify_password(body.password, u["password_hash"] if u else None):
@@ -232,7 +232,7 @@ def me(request: Request):
 
 @public.get("/me/ssh-key")
 def get_ssh_key(user: dict = Depends(require_auth)):
-    with db.tx() as c:
+    with db.read() as c:
         u = db.row(c, "SELECT ssh_public_key FROM users WHERE id=?", user["id"])
     has = keys.has_key(user["id"])
     return {"has_key": has, "public_key": u["ssh_public_key"] if has else None}
@@ -265,7 +265,7 @@ class PasswordChange(BaseModel):
 
 @public.post("/me/password")
 def change_password(body: PasswordChange, request: Request, user: dict = Depends(require_auth)):
-    with db.tx() as c:
+    with db.read() as c:
         stored = db.row(c, "SELECT password_hash FROM users WHERE id=?", user["id"])["password_hash"]
     if not users.verify_password(body.current, stored):
         raise HTTPException(400, "current password is incorrect")
@@ -302,7 +302,7 @@ class UserPatch(BaseModel):
 
 @admin.get("")
 def list_users():
-    with db.tx() as c:
+    with db.read() as c:
         rows = db.rows(c, "SELECT id, username, role, created_at, last_login, launch_limit, launch_count FROM users ORDER BY username COLLATE NOCASE")
     for r in rows:
         r["has_key"] = keys.has_key(r["id"])
@@ -394,7 +394,7 @@ class JobIn(BaseModel):
 @api.get("/jobs")
 def list_jobs(user: dict = Depends(require_auth)):
     where, args = ("", ()) if user["role"] == "admin" else (f"WHERE {VISIBLE} ", (user["id"], user["id"]))
-    with db.tx() as c:
+    with db.read() as c:
         return db.rows(
             c,
             "SELECT j.*, u.username AS owner_name, "
@@ -428,7 +428,7 @@ def create_job(body: JobIn, user: dict = Depends(require_auth)):
 @api.get("/jobs/{job_id}")
 def get_job(job_id: int, user: dict = Depends(require_auth)):
     role = guard_job(job_id, user)
-    with db.tx() as c:
+    with db.read() as c:
         job = get_or_404(c, "SELECT j.*, u.username AS owner_name FROM jobs j LEFT JOIN users u ON u.id=j.owner_id WHERE j.id=?", job_id)
         job["access"] = role
         if role == "owner":
@@ -484,7 +484,7 @@ def duplicate_job(job_id: int, user: dict = Depends(require_auth)):
 @api.delete("/jobs/{job_id}")
 def delete_job(job_id: int, user: dict = Depends(require_auth)):
     guard_job(job_id, user, True)
-    with db.tx() as c:
+    with db.read() as c:
         active = cancel_active(c, "job_id=?", job_id)
     for bid in active:
         runner.cancel(bid)
@@ -516,7 +516,7 @@ def set_shares(job_id: int, body: SharesIn, user: dict = Depends(require_auth)):
 @api.get("/directory")
 def directory(user: dict = Depends(require_auth)):
     """Users a job can be shared with (admins already see everything)."""
-    with db.tx() as c:
+    with db.read() as c:
         return db.rows(c, "SELECT id, username, role FROM users WHERE role != 'admin' AND id != ? ORDER BY username COLLATE NOCASE", user["id"])
 
 
@@ -545,7 +545,7 @@ class FolderMove(BaseModel):
 @api.get("/folders")
 def list_folders(user: dict = Depends(require_auth)):
     """Admins see every folder; others see their own plus the ones holding a job they can see."""
-    with db.tx() as c:
+    with db.read() as c:
         if user["role"] == "admin":
             paths = {r["path"] for r in db.rows(c, "SELECT path FROM folders")}
             paths |= {r["folder"] for r in db.rows(c, "SELECT DISTINCT folder FROM jobs WHERE folder != ''")}
@@ -632,7 +632,7 @@ async def upload_files(job_id: int, files: list[UploadFile] = File(...), user: d
 @api.get("/jobs/{job_id}/files/{name:path}")
 def read_file(job_id: int, name: str, user: dict = Depends(require_auth)):
     guard_job(job_id, user)
-    with db.tx() as c:
+    with db.read() as c:
         f = get_or_404(c, "SELECT content FROM job_files WHERE job_id=? AND name=?", job_id, name)
     try:
         return {"name": name, "content": f["content"].decode(), "binary": False}
@@ -697,7 +697,7 @@ class SyncIn(BaseModel):
 def sync_repos(job_id: int, body: SyncIn, user: dict = Depends(require_auth)):
     guard_job(job_id, user, True)
     """Create or refresh the repository list from GitHub. Remembers org + pattern for the next press."""
-    with db.tx() as c:
+    with db.read() as c:
         job = get_or_404(c, "SELECT id, github_org, repo_pattern FROM jobs WHERE id=?", job_id)
     org = body.org.strip() or job["github_org"]
     pattern = body.pattern.strip() or job["repo_pattern"]
@@ -705,13 +705,15 @@ def sync_repos(job_id: int, body: SyncIn, user: dict = Depends(require_auth)):
         raise HTTPException(400, "Enter the GitHub organization and a pattern (e.g. day06-*).")
     try:
         names = github.list_repos(org, pattern)
-        with db.tx() as c:
+        with db.read() as c:
             known = {r["url"]: r for r in db.rows(c, "SELECT id, url, name, renamed FROM repos WHERE job_id=?", job_id)}
         if not names:
             raise HTTPException(409, "No repository matches this pattern: nothing was changed.")
         # Names (commit authors) are only fetched for new repos and for ones nobody renamed by hand.
         urls = {n: f"git@github.com:{org}/{n}.git" for n in names}
-        to_name = [n for n in names if urls[n] not in known or not known[urls[n]]["renamed"]]
+        # Re-asking GitHub for the authors of a repo already named after them is wasted time.
+        to_name = [n for n in names if urls[n] not in known
+                   or (not known[urls[n]]["renamed"] and "@" not in known[urls[n]]["name"])]
         titles = github.names_for(org, to_name)
     except github.GitHubError as e:
         raise HTTPException(502, str(e))
@@ -726,7 +728,7 @@ def sync_repos(job_id: int, body: SyncIn, user: dict = Depends(require_auth)):
             if u not in current:
                 c.execute("INSERT INTO repos (job_id, name, url, created_at) VALUES (?, ?, ?, ?)", job_id, titles[n], u, db.now())
                 added += 1
-            elif not current[u]["renamed"] and current[u]["name"] != titles[n]:
+            elif n in titles and not current[u]["renamed"] and current[u]["name"] != titles[n]:
                 c.execute("UPDATE repos SET name=? WHERE id=?", titles[n], current[u]["id"])
                 updated += 1
         for u, r in current.items():
@@ -767,7 +769,7 @@ def delete_repo(repo_id: int, user: dict = Depends(require_auth)):
 @api.get("/repos/{repo_id}/builds")
 def repo_builds(repo_id: int, user: dict = Depends(require_auth)):
     guard_repo(repo_id, user)
-    with db.tx() as c:
+    with db.read() as c:
         repo = get_or_404(c, "SELECT * FROM repos WHERE id=?", repo_id)
         repo["builds"] = db.rows(c, "SELECT * FROM builds WHERE repo_id=? ORDER BY id DESC", repo_id)
         return repo
@@ -802,7 +804,7 @@ def run_repo(repo_id: int, user: dict = Depends(require_auth)):
 @api.post("/jobs/{job_id}/cancel")
 def cancel_job(job_id: int, user: dict = Depends(require_auth)):
     guard_job(job_id, user)
-    with db.tx() as c:
+    with db.read() as c:
         active = cancel_active(c, "job_id=?", job_id)
     return {"cancelled": sum(runner.cancel(bid) for bid in active)}
 
@@ -816,7 +818,7 @@ def cancel_build(build_id: int, user: dict = Depends(require_auth)):
 @api.get("/builds/{build_id}")
 def get_build(build_id: int, user: dict = Depends(require_auth)):
     guard_build(build_id, user)
-    with db.tx() as c:
+    with db.read() as c:
         return get_or_404(
             c,
             "SELECT b.*, r.name AS repo_name, r.url AS repo_url, j.name AS job_name "
@@ -829,7 +831,7 @@ def get_build(build_id: int, user: dict = Depends(require_auth)):
 def build_log(build_id: int, offset: int = 0, user: dict = Depends(require_auth)):
     guard_build(build_id, user)
     """Incremental log: returns raw bytes from `offset`; the client polls until X-Done is 1."""
-    with db.tx() as c:
+    with db.read() as c:
         b = get_or_404(c, "SELECT status FROM builds WHERE id=?", build_id)
     finished = b["status"] in db.FINISHED  # read status *before* the file to never miss a tail
     data = b""

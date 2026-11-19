@@ -110,6 +110,17 @@ def tx():
         conn.close()
 
 
+@contextmanager
+def read():
+    """Read-only unit of work: a plain deferred transaction, so readers never wait for (or block) the writer (WAL)."""
+    conn = _connect()
+    try:
+        conn.execute("BEGIN")
+        yield conn
+    finally:
+        conn.close()
+
+
 # Columns added after the first release: (table, column, definition).
 MIGRATIONS = [
     ("users", "launch_limit", "INTEGER NOT NULL DEFAULT 15"),

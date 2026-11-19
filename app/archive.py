@@ -28,7 +28,7 @@ def _iso(ts) -> str:
 
 
 def build_zip(job_id: int) -> tuple[str, bytes]:
-    with db.tx() as c:
+    with db.read() as c:
         job = db.row(c, "SELECT name FROM jobs WHERE id=?", job_id)
         if not job:
             raise KeyError(job_id)
@@ -77,7 +77,7 @@ def purge_old(days: int | None = None) -> int:
             c.execute(f"DELETE FROM builds WHERE id IN ({','.join('?' * len(chunk))})", *chunk)
     remove_logs(ids)
     # Logs whose build no longer exists (crash between delete and unlink) are cleaned too.
-    with db.tx() as c:
+    with db.read() as c:
         alive = {r["id"] for r in db.rows(c, "SELECT id FROM builds")}
     for p in config.LOGS_DIR.glob("*.log"):
         if p.stem.isdigit() and int(p.stem) not in alive and p.stat().st_mtime < cutoff:
