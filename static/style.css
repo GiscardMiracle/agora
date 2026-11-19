@@ -439,6 +439,6 @@ body[data-access="shared"] .own { display: none !important; }
 .fails { margin-top: 16px; }
 .fails .f-sec { margin-top: 8px; }
 .fails .f-sec ul { margin: 4px 0 0; padding-left: 18px; }
-.fails li { color: var(--red); font-size: 12.5px; }
+.fails li { color: var(--ko); font-size: 12.5px; }
 .fail-table .bar { height: 4px; border-radius: 2px; background: var(--line); margin-top: 4px; min-width: 70px; overflow: hidden; }
-.fail-table .bar b { display: block; height: 100%; background: var(--red); }
+.fail-table .bar b { display: block; height: 100%; background: var(--ko); }
