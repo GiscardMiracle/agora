@@ -452,3 +452,7 @@ body[data-access="shared"] .own { display: none !important; }
 #sched-list tr.off td { opacity: .55; }
 #sched-add { margin: 10px 0; }
 #sched-add label[hidden] { display: none; }
+
+/* similarity */
+.bar.sim { height: 4px; border-radius: 2px; background: var(--line); margin-top: 4px; min-width: 90px; overflow: hidden; }
+.bar.sim b { display: block; height: 100%; background: var(--warn); }

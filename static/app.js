@@ -631,7 +631,7 @@ async function viewJobs(dirEnc = "") {
 async function viewJob(id, tab = "repos") {
   const job = await api(`/jobs/${id}`);
   setNav(`<a href="#/">jobs</a> ${folderCrumbs(job.folder || "", false)} <span class="sep">/</span> <span class="crumb">${esc(job.name)}</span>`);
-  const tabs = [["repos", "Repositories", job.repos.length], ["failures", "Failures", null], ["files", "Test files", job.files.length]];
+  const tabs = [["repos", "Repositories", job.repos.length], ["failures", "Failures", null], ["similarity", "Similarity", null], ["files", "Test files", job.files.length]];
   document.body.dataset.access = job.access;
   if (canWrite() && job.access === "owner") tabs.push(["settings", "Settings", null]);
   const visibility = job.access === "shared"
@@ -658,6 +658,7 @@ async function viewJob(id, tab = "repos") {
   const el = document.getElementById("tab");
   if (tab === "files") return tabFiles(job, el);
   if (tab === "failures") return tabFailures(job, el);
+  if (tab === "similarity") return tabSimilarity(job, el);
   if (tab === "settings" && canWrite() && job.access === "owner") return tabSettings(job, el);
   return tabRepos(job, el);
 }
@@ -910,6 +911,29 @@ async function tabFailures(job, el) {
         <td style="white-space:nowrap"><b>${t.count}</b> <span class="muted small">${pct}%</span><div class="bar"><b style="width:${pct}%"></b></div></td>
         <td class="small">${t.repos.slice(0, 12).map((r) => `<a href="#/builds/${r.build_id}">${esc(r.name)}</a>`).join(", ")}${t.repos.length > 12 ? ` <span class="muted">+${t.repos.length - 12}</span>` : ""}</td></tr>`;
     }).join("")}</tbody></table></div>`;
+}
+
+async function tabSimilarity(job, el) {
+  const load = async (threshold) => {
+    const { compared, pairs } = await api(`/jobs/${job.id}/similarity?threshold=${threshold}`);
+    document.getElementById("sim-body").innerHTML = pairs.length
+      ? `<div class="tablewrap"><table class="repos"><thead><tr><th>Repository</th><th>Repository</th><th>Shared code</th></tr></thead><tbody>
+        ${pairs.map((p) => `<tr><td><a href="#/builds/${p.a.build_id}">${esc(p.a.name)}</a></td><td><a href="#/builds/${p.b.build_id}">${esc(p.b.name)}</a></td>
+          <td style="white-space:nowrap"><b>${Math.round(p.score * 100)}%</b> <span class="muted small">${p.shared} blocks</span>
+            <div class="bar sim"><b style="width:${Math.round(p.score * 100)}%"></b></div></td></tr>`).join("")}</tbody></table></div>`
+      : `<p class="muted" style="padding:24px;text-align:center">${compared < 2
+        ? "Not enough fingerprints yet: run the repositories first (a fingerprint is stored at each clone)."
+        : `No pair above ${Math.round(threshold * 100)}% among ${compared} repositories.`}</p>`;
+  };
+  el.innerHTML = `<div class="toolbar"><label class="muted small" style="display:flex;gap:8px;align-items:center">Show pairs above
+      <select id="sim-th"><option value="0.3">30%</option><option value="0.5" selected>50%</option><option value="0.7">70%</option><option value="0.9">90%</option></select></label></div>
+    <p class="muted small">Source files are compared after flattening names, numbers, strings and comments, so renaming variables does not hide a copy.
+      Code shared by a quarter of the class or more (the provided skeleton) is ignored. A high score is a reason to read both, not a verdict.</p>
+    <div id="sim-body"></div>`;
+  document.getElementById("sim-th").addEventListener("change", (e) => load(+e.target.value).catch((err) => {
+    if (!(err instanceof Unauthorized || err instanceof Stale)) toast(err.message, "ko");
+  }));
+  await load(0.5);
 }
 
 function tabFiles(job, el) {

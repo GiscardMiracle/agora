@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import archive, config, db, github, keys, repos, schedule, users
+from . import archive, config, db, github, keys, repos, schedule, similarity, users
 from .runner import Runner, log_path, remove_logs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -827,6 +827,29 @@ def delete_schedule(schedule_id: int, user: dict = Depends(require_auth)):
     with db.tx() as c:
         c.execute("DELETE FROM schedules WHERE id=?", schedule_id)
     return {"ok": True}
+
+
+@api.get("/jobs/{job_id}/similarity")
+def job_similarity(job_id: int, threshold: float = 0.5, user: dict = Depends(require_auth)):
+    """Pairs of repositories sharing a large part of their code (renamed variables and comments ignored)."""
+    guard_job(job_id, user)
+    threshold = min(1.0, max(0.1, threshold))
+    with db.read() as c:
+        rows = db.rows(
+            c,
+            "SELECT f.repo_id, f.data, r.name, "
+            " (SELECT MAX(id) FROM builds WHERE repo_id=r.id) AS build_id "
+            "FROM fingerprints f JOIN repos r ON r.id=f.repo_id WHERE r.job_id=?",
+            job_id,
+        )
+    prints = {r["repo_id"]: similarity.unpack(r["data"]) for r in rows}
+    info = {r["repo_id"]: r for r in rows}
+    pairs = similarity.compare(prints, threshold)
+    for p in pairs:
+        for k in ("a", "b"):
+            r = info[p[k]]
+            p[k] = {"id": r["repo_id"], "name": r["name"], "build_id": r["build_id"]}
+    return {"compared": len(prints), "pairs": pairs}
 
 
 class NoteIn(BaseModel):

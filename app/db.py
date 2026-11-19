@@ -61,6 +61,12 @@ CREATE TABLE IF NOT EXISTS builds (
 CREATE INDEX IF NOT EXISTS builds_repo ON builds(repo_id, id);
 CREATE INDEX IF NOT EXISTS builds_status ON builds(status, id);
 
+CREATE TABLE IF NOT EXISTS fingerprints (
+    repo_id    INTEGER PRIMARY KEY REFERENCES repos(id) ON DELETE CASCADE,
+    commit_sha TEXT,
+    data       BLOB NOT NULL      -- see similarity.py
+);
+
 CREATE TABLE IF NOT EXISTS schedules (
     id          INTEGER PRIMARY KEY,
     job_id      INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,

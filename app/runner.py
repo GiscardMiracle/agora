@@ -18,7 +18,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import config, db, keys
+from . import config, db, keys, similarity
 
 _HTTPS_GH = re.compile(r"^https://github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
 
@@ -194,6 +194,20 @@ class Runner:
         subprocess.run(["docker", "kill", container_name(build_id)], capture_output=True, check=False)
         return True
 
+    def _fingerprint(self, b: dict, repo_dir: Path, sha: str | None) -> None:
+        """Keep a compact fingerprint of the sources, to compare students (see similarity.py). Never fails a build."""
+        try:
+            fp = similarity.fingerprint(repo_dir)
+            with db.tx() as c:
+                if fp:
+                    c.execute("INSERT INTO fingerprints (repo_id, commit_sha, data) VALUES (?, ?, ?) "
+                              "ON CONFLICT(repo_id) DO UPDATE SET commit_sha=excluded.commit_sha, data=excluded.data",
+                              b["repo_id"], sha, similarity.pack(fp))
+                else:
+                    c.execute("DELETE FROM fingerprints WHERE repo_id=?", b["repo_id"])
+        except Exception:
+            log.exception("fingerprint failed for build %s", b["id"])
+
     async def _done(self, build: dict, status: str, **fields) -> None:
         await asyncio.to_thread(self._finish, build, status, **fields)
 
@@ -335,6 +349,7 @@ class Runner:
                                         capture_output=True, text=True, check=False)
             sha = r.stdout.strip() or None
             out.meta(f"commit {C_DIM}{sha or '(empty repository)'}{C_RESET}")
+            await asyncio.to_thread(self._fingerprint, b, repo_dir, sha)
 
             # 2. materialize the test files
             for f in b["files"]:
