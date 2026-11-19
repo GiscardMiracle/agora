@@ -154,6 +154,8 @@ MIGRATIONS = [
     ("jobs", "github_org", "TEXT NOT NULL DEFAULT ''"),
     ("jobs", "repo_pattern", "TEXT NOT NULL DEFAULT ''"),
     ("repos", "renamed", "INTEGER NOT NULL DEFAULT 0"),
+    ("jobs", "style_check", "INTEGER NOT NULL DEFAULT 1"),   # run the coding-style checker on every repo
+    ("jobs", "style_command", "TEXT NOT NULL DEFAULT ''"),   # empty = runner.DEFAULT_STYLE_COMMAND
     ("repos", "note", "TEXT NOT NULL DEFAULT ''"),
     ("builds", "failed_tests", "TEXT"),
     ("builds", "style_items", "TEXT"),  # JSON list of {file,line,col,sev,rule,msg}

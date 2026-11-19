@@ -405,6 +405,8 @@ class JobIn(BaseModel):
     command: str = Field(default="bash /tests/tests.sh", min_length=1)
     timeout: int = Field(default=60, ge=1, le=3600)
     memory_mb: int = Field(default=512, ge=64, le=4096)
+    style_check: bool = True
+    style_command: str = Field(default="", max_length=1000)
 
 
 SCORE_FRAC = re.compile(r"(-?[\d.]+)\s*/\s*([\d.]+)")
@@ -472,10 +474,10 @@ def create_job(body: JobIn, user: dict = Depends(require_auth)):
     with db.tx() as c:
         ensure_folder(c, folder, user["id"])
         cur = c.execute(
-            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, folder, owner_id, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, style_check, style_command, folder, "
+            "owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             body.name.strip(), body.description, body.image.strip(), body.command,
-            body.timeout, body.memory_mb, folder, user["id"], db.now(), db.now(),
+            body.timeout, body.memory_mb, int(body.style_check), body.style_command.strip(), folder, user["id"], db.now(), db.now(),
         )
         return {"id": cur.lastrowid}
 
@@ -510,10 +512,10 @@ def update_job(job_id: int, body: JobIn, user: dict = Depends(require_auth)):
         get_or_404(c, "SELECT id FROM jobs WHERE id=?", job_id)
         ensure_folder(c, folder, user["id"])
         c.execute(
-            "UPDATE jobs SET name=?, description=?, image=?, command=?, timeout=?, memory_mb=?, folder=?, updated_at=? "
-            "WHERE id=?",
+            "UPDATE jobs SET name=?, description=?, image=?, command=?, timeout=?, memory_mb=?, style_check=?, style_command=?, "
+            "folder=?, updated_at=? WHERE id=?",
             body.name.strip(), body.description, body.image.strip(), body.command,
-            body.timeout, body.memory_mb, folder, db.now(), job_id,
+            body.timeout, body.memory_mb, int(body.style_check), body.style_command.strip(), folder, db.now(), job_id,
         )
     return {"ok": True}
 
@@ -524,10 +526,10 @@ def duplicate_job(job_id: int, user: dict = Depends(require_auth)):
     with db.tx() as c:
         j = get_or_404(c, "SELECT * FROM jobs WHERE id=?", job_id)
         cur = c.execute(
-            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, folder, owner_id, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, style_check, style_command, folder, "
+            "owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             f"{j['name']} (copy)", j["description"], j["image"], j["command"],
-            j["timeout"], j["memory_mb"], j["folder"], user["id"], db.now(), db.now(),
+            j["timeout"], j["memory_mb"], j["style_check"], j["style_command"], j["folder"], user["id"], db.now(), db.now(),
         )
         c.execute(
             "INSERT INTO job_files (job_id, name, content) SELECT ?, name, content FROM job_files WHERE job_id=?",
@@ -991,7 +993,7 @@ def job_style(job_id: int, user: dict = Depends(require_auth)):
             c,
             "SELECT r.id AS repo_id, r.name, b.id AS build_id, b.style_items FROM repos r "
             "JOIN builds b ON b.id = (SELECT MAX(id) FROM builds WHERE repo_id=r.id) "
-            "WHERE r.job_id=? AND b.style IS NOT NULL",
+            "WHERE r.job_id=? AND b.style IS NOT NULL AND b.style NOT LIKE '%\"error\"%'",
             job_id,
         )
     rules: dict[str, dict] = {}
@@ -1083,7 +1085,7 @@ def build_log(build_id: int, offset: int = 0, user: dict = Depends(require_auth)
 
 def style_cells(raw: str | None) -> list:
     st = parse_style(raw)
-    return [st["major"], st["minor"], st["info"]] if st else ["", "", ""]
+    return [st["major"], st["minor"], st["info"]] if st and "error" not in st else ["", "", ""]
 
 
 @api.get("/jobs/{job_id}/export.csv")

@@ -75,20 +75,20 @@ remis à zéro avec ↺). Un lancement = un clic sur ▶ (dépôt seul, tout, ou
   sont ignorés, puis hachage par fenêtres de 7 tokens et *winnowing*). L'onglet *Similarity* liste les paires qui partagent une
   grande part de leur code. Le code commun à au moins un quart de la classe (squelette fourni) est ignoré.
   Un score élevé dit « lis les deux », pas « triche ».
-- **Coding style** : les rapports de `banana-check-repo` (`fichier:ligne: MAJOR:C-F3`) et les diagnostics clang qui portent un
-  identifiant de règle (`... warning: ... [C-G1]`) sont comptés par gravité. La colonne *Style* affiche `major / minor / info`,
-  le CSV aussi. Rien à écrire dans le test : il suffit que la commande du checker s'exécute dans le conteneur (voir ci-dessous).
+- **Coding style** : Agora lance lui-même `epiclang -fsyntax-only` sur **tous** les `.c` de chaque dépôt, avant les tests et
+  quel que soit le Makefile, dans un conteneur à part (réglage *Check the coding style* du job, commande modifiable, délai
+  `AGORA_STYLE_TIMEOUT`, 90 s par défaut). Chaque dépôt affiche donc trois nombres `X Y Z` (major, minor, info) ; zéro reste gris.
+  Si le checker est absent de l'image, la colonne affiche `? ? ?` avec la raison en infobulle. Les détails (fichier, ligne, règle)
+  sont sur la page du build et l'onglet *Style* classe les règles par nombre de dépôts. Les diagnostics
+  `fichier:ligne:col: warning: [Banana] [Major] message (C-C1)` d'epiclang et le format `MAJOR:C-F3` de `banana-check-repo`
+  sont compris, une même violation répétée par plusieurs `make` n'est comptée qu'une fois.
 
-### Style et mémoire : à mettre dans `tests.sh`
+### Mémoire : à mettre dans `tests.sh`
 
-Le checker doit exister dans l'image (`runner/Dockerfile`, `COPY` du binaire `banana-check-repo` et du dossier des plugins
-`epiclang` dans `/usr/local/lib/epiclang/plugins`). Ensuite, dans le test :
+Le style n'a rien à écrire dans le test (voir plus haut). Le checker doit seulement exister dans l'image (`runner/Dockerfile`,
+`COPY` des plugins `epiclang` dans `/usr/local/lib/epiclang/plugins`). Pour la mémoire :
 
 ```bash
-# coding style : la sortie du checker est comptée par Agora, aucun parsing à faire ici
-banana-check-repo . 2>&1 | sed 's/^/    /'
-find . -name '*.c' -exec epiclang -fsyntax-only -I include {} + 2>&1
-
 # fuites et accès invalides : valgrind rend le code 42 s'il trouve quelque chose
 valgrind -q --leak-check=full --error-exitcode=42 ./mon_programme args >/dev/null 2>/tmp/vg
 [ $? -eq 42 ] && record memory 1 "valgrind" "$(head -5 /tmp/vg)" || record memory 0 "valgrind"

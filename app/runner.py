@@ -193,8 +193,56 @@ class Runner:
             if b["status"] != "running":
                 return False
         self._cancelled.add(build_id)
-        subprocess.run(["docker", "kill", container_name(build_id)], capture_output=True, check=False)
+        for name in (container_name(build_id), container_name(build_id) + "-style"):
+            subprocess.run(["docker", "kill", name], capture_output=True, check=False)
         return True
+
+    @staticmethod
+    def _sandbox_args(name: str, b: dict, repo_dir: Path, tests_dir: Path, command: str, tty: bool) -> list[str]:
+        mem = f"{b['memory_mb']}m"
+        return [
+            "docker", "run", "--rm", "--name", name, *(["-t"] if tty else []),
+            "--network", "none",
+            "--memory", mem, "--memory-swap", mem,
+            "--cpus", "1", "--pids-limit", "256",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            "--user", f"{os.getuid()}:{os.getgid()}",
+            "--tmpfs", "/tmp:rw,exec,nosuid,size=256m",
+            "-e", "HOME=/tmp", "-e", "TERM=xterm-256color",
+            "-e", "AGORA_REPO=/work", "-e", "AGORA_TESTS=/tests",
+            "-v", f"{repo_dir}:/work", "-v", f"{tests_dir}:/tests:ro",
+            "-w", "/work",
+            b["image"], "sh", "-c", f"exec </dev/null; {command}",
+        ]
+
+    async def _style_step(self, b: dict, out: "LogWriter", repo_dir: Path, tests_dir: Path) -> None:
+        """Run the coding-style checker on the clone, whatever the repository's Makefile does, so that every
+        repository gets the same three numbers. Runs before the tests, on untouched sources."""
+        name = container_name(b["id"]) + "-style"
+        cmd = (b["style_command"] or "").strip() or style.DEFAULT_COMMAND
+        sink = style.LineSink(out.style)
+        t0 = time.monotonic()
+
+        async def kill():
+            await asyncio.to_thread(subprocess.run, ["docker", "kill", name], capture_output=True, check=False)
+
+        args = self._sandbox_args(name, b, repo_dir, tests_dir, cmd, tty=False)
+        rc, timed_out = await self._stream(args, sink, config.STYLE_TIMEOUT, on_timeout=kill)
+        sink.close()
+        if timed_out:
+            out.style.error = f"the style check timed out after {config.STYLE_TIMEOUT}s"
+        elif style.missing_checker(rc, sink.tail):
+            out.style.error = "the style checker (epiclang) is not installed in the image"
+        elif rc == 125:
+            out.style.error = "docker could not start the style check"
+        else:
+            out.style.checked = True
+        c = out.style.counts
+        took = f"{time.monotonic() - t0:.1f}s"
+        if out.style.error:
+            out.meta(f"{C_WARN}coding style not checked: {out.style.error}{C_RESET}")
+        else:
+            out.meta(f"coding style: {c['major']} major · {c['minor']} minor · {c['info']} info {C_DIM}({took}){C_RESET}")
 
     def _fingerprint(self, b: dict, repo_dir: Path, sha: str | None) -> None:
         """Keep a compact fingerprint of the sources, to compare students (see similarity.py). Never fails a build."""
@@ -243,7 +291,7 @@ class Runner:
             b = db.row(
                 c,
                 "SELECT b.id, b.job_id, b.repo_id, b.user_id, r.url, r.name AS repo_name, j.name AS job_name, "
-                "j.image, j.command, j.timeout, j.memory_mb "
+                "j.image, j.command, j.timeout, j.memory_mb, j.style_check, j.style_command "
                 "FROM builds b JOIN repos r ON r.id=b.repo_id JOIN jobs j ON j.id=b.job_id "
                 "WHERE b.status='queued' ORDER BY b.id LIMIT 1",
             )
@@ -257,7 +305,12 @@ class Runner:
         out = build.get("_out")
         failed = json.dumps(out.failures, ensure_ascii=False) if out and out.failures else None
         checked = bool(out and out.style.checked)
-        style_counts = json.dumps(out.style.counts) if checked else None
+        if checked:
+            style_counts = json.dumps(out.style.counts)
+        elif out and out.style.error:
+            style_counts = json.dumps({"error": out.style.error})
+        else:
+            style_counts = None
         style_items = json.dumps(out.style.items, ensure_ascii=False) if checked and out.style.items else None
         with db.tx() as c:
             cur = c.execute(
@@ -363,6 +416,9 @@ class Runner:
                 p.write_bytes(f["content"])
                 p.chmod(0o755)
 
+            if b["style_check"]:
+                await self._style_step(b, out, repo_dir, tests_dir)
+
             if bid in self._cancelled:
                 out.meta(f"{C_WARN}cancelled{C_RESET}")
                 await self._done(b, "cancelled", commit_sha=sha)
@@ -371,20 +427,7 @@ class Runner:
             # 3. run in the sandbox
             name = container_name(bid)
             mem = f"{b['memory_mb']}m"
-            args = [
-                "docker", "run", "--rm", "--name", name, "-t",
-                "--network", "none",
-                "--memory", mem, "--memory-swap", mem,
-                "--cpus", "1", "--pids-limit", "256",
-                "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-                "--user", f"{os.getuid()}:{os.getgid()}",
-                "--tmpfs", "/tmp:rw,exec,nosuid,size=256m",
-                "-e", "HOME=/tmp", "-e", "TERM=xterm-256color",
-                "-e", "AGORA_REPO=/work", "-e", "AGORA_TESTS=/tests",
-                "-v", f"{repo_dir}:/work", "-v", f"{tests_dir}:/tests:ro",
-                "-w", "/work",
-                b["image"], "sh", "-c", f"exec </dev/null; {b['command']}",
-            ]
+            args = self._sandbox_args(name, b, repo_dir, tests_dir, b["command"], tty=True)
 
             async def kill():
                 await asyncio.to_thread(

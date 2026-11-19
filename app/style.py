@@ -45,6 +45,7 @@ def parse_line(text: str) -> dict | None:
 class Collector:
     def __init__(self) -> None:
         self.checked = False
+        self.error: str | None = None   # set when the dedicated style step could not run
         self._seen: dict[tuple, dict] = {}
 
     def feed(self, text: str) -> None:
@@ -67,3 +68,41 @@ class Collector:
     def items(self) -> list[dict]:
         order = {s: i for i, s in enumerate(SEVERITIES)}
         return sorted(self._seen.values(), key=lambda v: (order[v["sev"]], v["file"], v["line"], v["col"]))[:MAX_ITEMS]
+
+
+# What the style step runs in the sandbox when the job gives no command of its own: every .c file of the
+# repository, whatever its Makefile does. Several files per call (one clang start-up for many files).
+DEFAULT_COMMAND = (
+    "find . -type f -name '*.c' -not -path './.git/*' -print0 "
+    "| xargs -0 -r epiclang -fsyntax-only -I include -I ."
+)
+
+
+class LineSink:
+    """Receives the raw output of the style step: feeds a Collector line by line, keeps the tail for diagnosis."""
+
+    def __init__(self, collector: Collector) -> None:
+        self.collector = collector
+        self._buf = ""
+        self.tail = ""
+
+    def write(self, data: bytes) -> None:
+        text = ANSI.sub("", data.decode(errors="replace"))
+        self.tail = (self.tail + text)[-2000:]
+        self._buf += text
+        *lines, self._buf = self._buf.split("\n")
+        for line in lines:
+            self.collector.feed(line.rstrip("\r"))
+
+    def close(self) -> None:
+        if self._buf:
+            self.collector.feed(self._buf.rstrip("\r"))
+            self._buf = ""
+
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def missing_checker(rc: int | None, tail: str) -> bool:
+    """True when the command could not even start the checker (not installed in the image)."""
+    return rc == 127 or bool(re.search(r"(epiclang|banana-check-repo)[^\n]*(not found|No such file)", tail))

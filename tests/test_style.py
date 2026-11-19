@@ -69,3 +69,26 @@ class Other(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Step(unittest.TestCase):
+    """The dedicated style step: its raw output goes through a LineSink into the same Collector."""
+
+    def test_sink_handles_chunks_cut_anywhere(self):
+        c = style.Collector()
+        sink = style.LineSink(c)
+        data = ("a.c:1:1: warning: [Banana] [Major] x (C-C1)\r\n" "b.c:2:2: warning: [Banana] [Info] y (C-A3)").encode()
+        for i in range(0, len(data), 7):
+            sink.write(data[i:i + 7])
+        sink.close()
+        self.assertEqual(c.counts, {"major": 1, "minor": 0, "info": 1})
+
+    def test_missing_checker_detected(self):
+        self.assertTrue(style.missing_checker(127, ""))
+        self.assertTrue(style.missing_checker(0, "sh: 1: epiclang: not found\n"))
+        self.assertFalse(style.missing_checker(1, "a.c:1:1: error: 'x.h' file not found"))
+        self.assertFalse(style.missing_checker(0, ""))
+
+    def test_default_command_covers_every_c_file(self):
+        self.assertIn("-name '*.c'", style.DEFAULT_COMMAND)
+        self.assertIn("epiclang -fsyntax-only", style.DEFAULT_COMMAND)

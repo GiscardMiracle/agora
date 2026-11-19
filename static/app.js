@@ -715,9 +715,10 @@ function renderStats(repos) {
 function styleCell(st) {
   if (typeof st === "string") { try { st = JSON.parse(st); } catch { st = null; } }
   if (!st) return "";
-  if (!st.major && !st.minor && !st.info) return `<span class="sty clean" title="coding style: no violation">✓ clean</span>`;
+  if (st.error) return `<span class="sty failed" title="${esc(st.error)}"><b>?</b><b>?</b><b>?</b></span>`;
+  const n = (v, k) => `<b class="${k}${v ? " nz" : ""}">${v}</b>`;
   return `<span class="sty" title="coding style: ${st.major} major, ${st.minor} minor, ${st.info} info">` +
-    `<b class="maj">${st.major}</b><b class="min">${st.minor}</b><b class="inf">${st.info}</b></span>`;
+    `${n(st.major, "maj")}${n(st.minor, "min")}${n(st.info, "inf")}</span>`;
 }
 
 // ---- repository list: filter + sort (pure helpers)
@@ -766,6 +767,8 @@ function sortRepos(repos, key) {
 }
 
 function tabRepos(job, el) {
+  // The Style column exists as soon as the job checks the style (or some build already has a result).
+  const showStyle = !!job.style_check || job.repos.some((r) => r.style);
   el.innerHTML = `
     <div class="toolbar">
       <button class="btn primary w" data-act="run-all">${ico("play", 14)}Run all</button>
@@ -778,7 +781,7 @@ function tabRepos(job, el) {
       <select id="f-sort" title="sort">${SORTS.map(([v, l]) => `<option value="${v}">sort: ${l}</option>`).join("")}</select>
     </div>
     <div class="tablewrap"><table class="repos">
-      <thead><tr><th>Student</th><th>Status</th><th>Score</th><th title="coding style: major / minor / info">Style</th><th>Commit</th><th>Time</th><th>Date</th><th></th></tr></thead>
+      <thead><tr><th>Student</th><th>Status</th><th>Score</th>${showStyle ? `<th title="coding style: major / minor / info">Style</th>` : ""}<th>Commit</th><th>Time</th><th>Date</th><th></th></tr></thead>
       <tbody id="rows"></tbody>
     </table></div>
     <section class="card add w own">
@@ -820,7 +823,7 @@ function tabRepos(job, el) {
           <a class="repo-url" href="${esc(r.url.startsWith("git@") ? "https://github.com/" + shortRepo(r.url) : r.url.replace(/\.git$/, ""))}" target="_blank" rel="noopener">${esc(shortRepo(r.url))}</a></div></div></td>
         <td>${badge(r.status, r.score)}</td>
         <td>${scoreCell(r.score)}</td>
-        <td>${styleCell(r.style)}</td>
+        ${showStyle ? `<td>${styleCell(r.style) || `<span class="muted small">—</span>`}</td>` : ""}
         <td class="sha">${r.commit_sha ? r.commit_sha.slice(0, 7) : ""}</td>
         <td class="small">${fmtDur(r)}</td>
         <td class="muted small">${fmtDate(r.finished_at || r.started_at || r.queued_at)}</td>
@@ -832,7 +835,7 @@ function tabRepos(job, el) {
           <button class="icon own" data-act="rename" title="rename">${ico("pencil", 15)}</button>
           <button class="icon danger own" data-act="del" title="delete">${ico("trash", 15)}</button>
         </td>
-      </tr>`).join("") || `<tr><td colspan="8" class="muted" style="text-align:center;padding:28px">No repositories — add them below.</td></tr>`;
+      </tr>`).join("") || `<tr><td colspan="${showStyle ? 8 : 7}" class="muted" style="text-align:center;padding:28px">No repositories — add them below.</td></tr>`;
     renderStats(repos);
   };
   render();
@@ -1101,6 +1104,10 @@ function tabSettings(job, el) {
         <label>Timeout (s) <input name="timeout" type="number" min="1" max="3600" value="${job.timeout}"></label>
         <label>Memory (MB) <input name="memory_mb" type="number" min="64" max="4096" value="${job.memory_mb}"></label>
       </div>
+      <label class="pick" style="margin-top:6px"><input type="checkbox" name="style_check" ${job.style_check ? "checked" : ""}>
+        <span>Check the coding style of every repository <span class="muted small">(runs <code>epiclang</code> on all the .c files before the tests, whatever the Makefile does)</span></span></label>
+      <label>Style command <span class="muted small">(optional, runs in /work; its output is read like epiclang's. Empty = every .c file with <code>epiclang -fsyntax-only</code>)</span>
+        <input name="style_command" value="${esc(job.style_command || "")}" placeholder="find . -name '*.c' | xargs epiclang -fsyntax-only -I include"></label>
       <div class="toolbar">
         <button class="btn primary">save</button>
         <span class="grow"></span>
@@ -1202,6 +1209,7 @@ function tabSettings(job, el) {
       await api(`/jobs/${job.id}`, { method: "PUT", json: {
         name: f.name.value, description: f.description.value, folder: f.folder.value, command: f.command.value,
         image: f.image.value, timeout: +f.timeout.value, memory_mb: +f.memory_mb.value,
+        style_check: f.style_check.checked, style_command: f.style_command.value,
       } });
       toast("Settings saved", "ok");
       route();
@@ -1294,7 +1302,9 @@ async function viewBuild(id) {
     }
     const sbox = document.getElementById("stylebox"), items = x.style_items || [];
     sbox.hidden = !x.style;
-    if (x.style) {
+    if (x.style?.error) {
+      sbox.innerHTML = `<div class="eyebrow">coding style · ${styleCell(x.style)}</div><div class="muted small">Not checked: ${esc(x.style.error)}</div>`;
+    } else if (x.style) {
       const n = items.length, total = x.style.major + x.style.minor + x.style.info;
       sbox.innerHTML = `<div class="eyebrow">coding style · ${styleCell(x.style)}</div>` + (n
         ? `<details ${n <= 15 ? "open" : ""}><summary>${total} violation${total > 1 ? "s" : ""}${n < total ? ` (first ${n} shown)` : ""}</summary>

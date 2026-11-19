@@ -460,12 +460,13 @@ body[data-access="shared"] .own { display: none !important; }
 /* coding style counters */
 .sty { display: inline-flex; gap: 3px; font-family: var(--mono); font-size: 11.5px; }
 .sty b { min-width: 20px; text-align: center; padding: 1px 5px; border-radius: 4px; font-weight: 600; background: var(--line); color: var(--mute); }
-.sty b.maj:not(:empty) { color: var(--ko); }
-.sty .maj { background: color-mix(in srgb, var(--ko) 14%, transparent); }
-.sty .min { background: color-mix(in srgb, var(--mid) 16%, transparent); color: var(--mid); }
+/* X Y Z = major / minor / info; a zero stays grey, a non-zero takes its colour */
+.sty b.maj.nz { color: var(--ko); background: color-mix(in srgb, var(--ko) 14%, transparent); }
+.sty b.min.nz { color: var(--mid); background: color-mix(in srgb, var(--mid) 16%, transparent); }
+.sty b.inf.nz { color: var(--run); background: color-mix(in srgb, var(--run) 14%, transparent); }
+.sty.failed { opacity: .6; cursor: help; }
 
 /* coding style details */
-.sty.clean { color: var(--ok); font-weight: 600; }
 .sev { display: inline-block; font: 600 10.5px var(--mono); letter-spacing: .05em; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; background: var(--line); color: var(--mute); }
 .sev.major { color: var(--ko); background: color-mix(in srgb, var(--ko) 13%, transparent); }
 .sev.minor { color: var(--mid); background: color-mix(in srgb, var(--mid) 15%, transparent); }

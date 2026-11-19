@@ -27,6 +27,8 @@ TZ = os.environ.get("AGORA_TZ", "").strip()
 # Number of builds running in parallel. Keep it low on a 2 GB VPS.
 WORKERS = _int("AGORA_WORKERS", 2)
 CLONE_TIMEOUT = _int("AGORA_CLONE_TIMEOUT", 120)
+# Time allowed to the coding-style check of one repository (it runs before the tests, in its own container).
+STYLE_TIMEOUT = _int("AGORA_STYLE_TIMEOUT", 90)
 # Hard cap on stored output per build (bytes). Protects disk from infinite printf loops.
 MAX_LOG_BYTES = _int("AGORA_MAX_LOG_BYTES", 2 * 1024 * 1024)
 
