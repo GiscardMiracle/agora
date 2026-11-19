@@ -685,15 +685,59 @@ function renderStats(repos) {
     ${repos.length ? `<div class="matrix">${repos.map(cell).join("")}</div>` : ""}`;
 }
 
+// ---- repository list: filter + sort (pure helpers)
+
+const STATUS_FILTERS = [
+  ["", "all statuses"], ["ko", "failing"], ["success", "passed"], ["active", "queued / running"], ["none", "never run"],
+];
+
+function statusMatches(status, want) {
+  if (!want) return true;
+  if (want === "ko") return isKo(status);
+  if (want === "active") return isActive(status);
+  if (want === "none") return !status;
+  return status === want;
+}
+
+function filterRepos(repos, q, status) {
+  q = (q || "").trim().toLowerCase();
+  return repos.filter((r) => statusMatches(r.status, status)
+    && (!q || r.name.toLowerCase().includes(q) || r.url.toLowerCase().includes(q)));
+}
+
+const SORTS = [
+  ["name", "name"], ["score", "score ↓"], ["score-asc", "score ↑"], ["status", "status"], ["date", "most recent"], ["time", "slowest"],
+];
+
+function sortRepos(repos, key) {
+  const byName = (a, b) => a.name.localeCompare(b.name, "fr", { sensitivity: "base", numeric: true });
+  const pct = (r) => scorePct(r.score) ?? -1;
+  const order = { failed: 0, error: 1, timeout: 2, running: 3, queued: 4, cancelled: 5, success: 6 };
+  const rank = (r) => (r.status ? order[r.status] ?? 7 : 8);
+  const dur = (r) => (r.started_at ? (r.finished_at || Date.now() / 1000) - r.started_at : -1);
+  const last = (r) => r.finished_at || r.started_at || r.queued_at || 0;
+  const cmp = {
+    name: byName,
+    score: (a, b) => pct(b) - pct(a) || byName(a, b),
+    "score-asc": (a, b) => pct(a) - pct(b) || byName(a, b),
+    status: (a, b) => rank(a) - rank(b) || byName(a, b),
+    date: (a, b) => last(b) - last(a) || byName(a, b),
+    time: (a, b) => dur(b) - dur(a) || byName(a, b),
+  }[key] || byName;
+  return [...repos].sort(cmp);
+}
+
 function tabRepos(job, el) {
   el.innerHTML = `
     <div class="toolbar">
       <button class="btn primary w" data-act="run-all">${ico("play", 14)}Run all</button>
-      <button class="btn w" data-act="run-shown" title="runs only the repositories shown by the filter">${ico("play", 14)}Run filtered</button>
+      <button class="btn w" data-act="run-shown" title="runs only the repositories shown (use the status filter to re-run the failing ones)">${ico("play", 14)}Run shown</button>
       <button class="btn w" data-act="cancel-all">${ico("stop", 14)}Cancel all</button>
       <a class="btn" href="/api/jobs/${job.id}/export.csv">${ico("down", 14)}CSV</a>
       <a class="btn" href="/api/jobs/${job.id}/archive.zip" title="CSV + raw logs of the whole history">${ico("down", 14)}Archive</a>
       <input id="filter" placeholder="⌕ filter…  ( / )" class="grow">
+      <select id="f-status" title="filter by status">${STATUS_FILTERS.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select>
+      <select id="f-sort" title="sort">${SORTS.map(([v, l]) => `<option value="${v}">sort: ${l}</option>`).join("")}</select>
     </div>
     <div class="tablewrap"><table class="repos">
       <thead><tr><th>Student</th><th>Status</th><th>Score</th><th>Commit</th><th>Time</th><th>Date</th><th></th></tr></thead>
@@ -724,11 +768,13 @@ function tabRepos(job, el) {
 
   const rows = document.getElementById("rows");
   const filter = document.getElementById("filter");
+  const fStatus = document.getElementById("f-status"), fSort = document.getElementById("f-sort");
+  try { fSort.value = localStorage.getItem("agora-sort") || "name"; } catch {}
   let repos = job.repos;
+  const shown = () => sortRepos(filterRepos(repos, filter.value, fStatus.value), fSort.value);
 
   const render = () => {
-    const q = filter.value.trim().toLowerCase();
-    const list = repos.filter((r) => !q || r.name.toLowerCase().includes(q) || r.url.toLowerCase().includes(q));
+    const list = shown();
     rows.innerHTML = list.map((r) => `
       <tr data-repo="${r.id}" ${r.build_id ? `data-build="${r.build_id}" class="clickable"` : ""}>
         <td><div class="who">${avatar(r.name)}<div><div class="name">${esc(r.name)}</div>
@@ -756,6 +802,11 @@ function tabRepos(job, el) {
   };
   every(2000, refresh);
   filter.addEventListener("input", render);
+  fStatus.addEventListener("change", render);
+  fSort.addEventListener("change", () => {
+    try { localStorage.setItem("agora-sort", fSort.value); } catch {}
+    render();
+  });
   onKey((e) => { if (e.key === "/") { e.preventDefault(); filter.focus(); } });
 
   el.addEventListener("click", async (e) => {
@@ -768,8 +819,7 @@ function tabRepos(job, el) {
     const act = btn.dataset.act;
     try {
       if (act === "run-shown") {
-        const q = filter.value.trim().toLowerCase();
-        const ids = repos.filter((r) => !q || r.name.toLowerCase().includes(q) || r.url.toLowerCase().includes(q)).map((r) => r.id);
+        const ids = shown().map((r) => r.id);
         if (!ids.length) return toast("No repository shown");
         const { queued } = await api(`/jobs/${job.id}/run`, { method: "POST", json: { repo_ids: ids } });
         toast(`${queued} build(s) queued`, "ok");
