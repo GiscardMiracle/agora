@@ -936,6 +936,41 @@ def parse_style(raw: str | None) -> dict | None:
         return None
 
 
+def parse_items(raw: str | None) -> list[dict]:
+    try:
+        return json.loads(raw) if raw else []
+    except ValueError:
+        return []
+
+
+@api.get("/jobs/{job_id}/style")
+def job_style(job_id: int, user: dict = Depends(require_auth)):
+    """Coding-style rules broken in the latest build of each repository, most widespread first."""
+    guard_job(job_id, user)
+    with db.read() as c:
+        rows = db.rows(
+            c,
+            "SELECT r.id AS repo_id, r.name, b.id AS build_id, b.style_items FROM repos r "
+            "JOIN builds b ON b.id = (SELECT MAX(id) FROM builds WHERE repo_id=r.id) "
+            "WHERE r.job_id=? AND b.style IS NOT NULL",
+            job_id,
+        )
+    rules: dict[str, dict] = {}
+    for r in rows:
+        mine: dict[str, int] = {}
+        for v in parse_items(r["style_items"]):
+            g = rules.setdefault(v["rule"], {"rule": v["rule"], "sev": v["sev"], "msg": v["msg"], "total": 0, "repos": []})
+            g["total"] += 1
+            mine[v["rule"]] = mine.get(v["rule"], 0) + 1
+        for rule, n in mine.items():
+            rules[rule]["repos"].append({"id": r["repo_id"], "name": r["name"], "build_id": r["build_id"], "n": n})
+    out = sorted(rules.values(), key=lambda g: (-len(g["repos"]), -g["total"], g["rule"]))
+    for g in out:
+        g["count"] = len(g["repos"])
+        g["repos"].sort(key=lambda x: -x["n"])
+    return {"checked": len(rows), "rules": out}
+
+
 def parse_failed(raw: str | None) -> list[list[str]]:
     try:
         return json.loads(raw) if raw else []
@@ -981,6 +1016,7 @@ def get_build(build_id: int, user: dict = Depends(require_auth)):
         )
     b["failed_tests"] = parse_failed(b["failed_tests"])
     b["style"] = parse_style(b["style"])
+    b["style_items"] = parse_items(b.get("style_items"))
     return b
 
 

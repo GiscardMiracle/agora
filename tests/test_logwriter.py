@@ -27,16 +27,16 @@ class Parsing(unittest.TestCase):
 
     def test_banana_report(self):
         w = feed("./src/main.c:12: MAJOR:C-F3 # too long\n./src/a.c:3: MINOR:C-L2 # x\n./a.c:9: MINOR:C-O1\n./b.h:1: INFO:C-A3\n")
-        self.assertEqual(w.style, {"major": 1, "minor": 2, "info": 1})
+        self.assertEqual(w.style.counts, {"major": 1, "minor": 2, "info": 1})
 
     def test_clang_diagnostics_with_rule_id(self):
         w = feed("main.c:4:1: warning: function too long [C-F4]\nmain.c:9:1: error: forbidden [C-G1]\n"
                  "main.c:9:1: warning: unused variable 'x' [-Wunused]\n")
-        self.assertEqual(w.style, {"major": 1, "minor": 1, "info": 0})
+        self.assertEqual(w.style.counts, {"major": 1, "minor": 1, "info": 0})
 
     def test_ordinary_output_is_not_style(self):
         w = feed("warning: something\nINFO: all good\nC-3PO says hi\n")
-        self.assertEqual(w.style, {"major": 0, "minor": 0, "info": 0})
+        self.assertEqual(w.style.counts, {"major": 0, "minor": 0, "info": 0})
 
     def test_line_split_across_writes(self):
         w = runner.LogWriter(Path(tempfile.mkdtemp()) / "y.log", [])
@@ -44,7 +44,7 @@ class Parsing(unittest.TestCase):
         w.write(b"OR:C-F3\n  \xe2\x9c\x98 half")
         w.write(b" line\n")
         w.close()
-        self.assertEqual(w.style["major"], 1)
+        self.assertEqual(w.style.counts["major"], 1)
         self.assertEqual(w.failures, [["", "half line"]])
 
 

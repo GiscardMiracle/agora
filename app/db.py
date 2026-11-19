@@ -156,6 +156,7 @@ MIGRATIONS = [
     ("repos", "renamed", "INTEGER NOT NULL DEFAULT 0"),
     ("repos", "note", "TEXT NOT NULL DEFAULT ''"),
     ("builds", "failed_tests", "TEXT"),
+    ("builds", "style_items", "TEXT"),  # JSON list of {file,line,col,sev,rule,msg}
     ("builds", "style", "TEXT"),  # JSON {"major": n, "minor": n, "info": n}: coding-style violations seen in the log  # JSON [[section, label], ...] of the tests printed as failed
 ]
 
