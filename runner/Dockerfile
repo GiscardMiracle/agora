@@ -13,6 +13,11 @@ RUN apt-get update \
 # The container is thrown away after each run.
 RUN chmod 666 /etc/passwd /etc/group
 
+# Coding-style checkers (not packaged for Debian: put yours in runner/tools/ first).
+#   banana-check-repo -> /usr/local/bin, epiclang plugins (*.so) -> /usr/local/lib/epiclang/plugins
+# COPY tools/banana-check-repo /usr/local/bin/
+# COPY tools/epiclang-plugins/ /usr/local/lib/epiclang/plugins/
+
 # Uncomment for graphical projects (adds ~300 MB):
 # RUN apt-get update && apt-get install -y --no-install-recommends libcsfml-dev && rm -rf /var/lib/apt/lists/*
 

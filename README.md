@@ -60,6 +60,45 @@ clé publique sur GitHub. Sans clé, lancer un job renvoie une erreur immédiate
 Chaque non-admin dispose de 15 lancements **au total** (ajustable par l'admin dans *Utilisateurs*, compteur
 remis à zéro avec ↺). Un lancement = un clic sur ▶ (dépôt seul, tout, ou filtre), quel que soit le nombre de dépôts.
 
+## Analyse des résultats
+
+- **Tri et filtres** : la liste des dépôts se filtre par texte et par statut (en échec, réussis, en cours, jamais lancés) et se trie
+  (nom, score, statut, date, durée). *Run shown* ne lance que les dépôts affichés : filtre sur « failing » pour relancer les échecs.
+- **Tests en échec** : une ligne `✘ libellé` dans la sortie est un test raté, une ligne `━━ nom` ouvre une section (c'est ce que
+  fait le `record` des exemples). Les échecs sont listés sur la page du build, et l'onglet *Failures* d'un job classe les tests
+  par nombre d'étudiants qui les ratent, avec la liste des noms.
+- **Notes** : l'icône note d'une ligne enregistre un commentaire libre sur un dépôt (remarques de soutenance), exporté dans le CSV.
+- **Similarité** : à chaque clone, les sources sont réduites à une empreinte (noms de variables, nombres, chaînes et commentaires
+  sont ignorés, puis hachage par fenêtres de 7 tokens et *winnowing*). L'onglet *Similarity* liste les paires qui partagent une
+  grande part de leur code. Le code commun à au moins un quart de la classe (squelette fourni) est ignoré.
+  Un score élevé dit « lis les deux », pas « triche ».
+- **Coding style** : les rapports de `banana-check-repo` (`fichier:ligne: MAJOR:C-F3`) et les diagnostics clang qui portent un
+  identifiant de règle (`... warning: ... [C-G1]`) sont comptés par gravité. La colonne *Style* affiche `major / minor / info`,
+  le CSV aussi. Rien à écrire dans le test : il suffit que la commande du checker s'exécute dans le conteneur (voir ci-dessous).
+
+### Style et mémoire : à mettre dans `tests.sh`
+
+Le checker doit exister dans l'image (`runner/Dockerfile`, `COPY` du binaire `banana-check-repo` et du dossier des plugins
+`epiclang` dans `/usr/local/lib/epiclang/plugins`). Ensuite, dans le test :
+
+```bash
+# coding style : la sortie du checker est comptée par Agora, aucun parsing à faire ici
+banana-check-repo . 2>&1 | sed 's/^/    /'
+find . -name '*.c' -exec epiclang -fsyntax-only -I include {} + 2>&1
+
+# fuites et accès invalides : valgrind rend le code 42 s'il trouve quelque chose
+valgrind -q --leak-check=full --error-exitcode=42 ./mon_programme args >/dev/null 2>/tmp/vg
+[ $? -eq 42 ] && record memory 1 "valgrind" "$(head -5 /tmp/vg)" || record memory 0 "valgrind"
+```
+
+## Planification
+
+Onglet *Settings* d'un job (propriétaire uniquement), carte *scheduled runs* : lance tous les dépôts **une fois** à une date
+(rendu à une échéance) ou **de façon récurrente** avec une expression cron à 5 champs (`minute heure jour-du-mois mois jour-de-semaine`,
+listes, plages, pas `*/15`, `@daily`…). Quand jour du mois et jour de semaine sont tous deux fixés, l'un **ou** l'autre suffit (cron standard).
+Le fuseau est `AGORA_TZ` (ex. `Europe/Paris`), sinon l'heure du serveur. Un passage manqué de plus de 15 minutes (serveur éteint)
+est ignoré et signalé plutôt que lancé en retard. Les passages planifiés utilisent ta clé SSH et ne consomment pas ta limite de lancements.
+
 ## Visibilité et partage
 
 Un job (et les dossiers créés) n'est visible que de son créateur et des admins. Dans *Settings → sharing*, le créateur
