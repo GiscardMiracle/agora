@@ -407,24 +407,63 @@ class JobIn(BaseModel):
     memory_mb: int = Field(default=512, ge=64, le=4096)
 
 
+SCORE_FRAC = re.compile(r"(-?[\d.]+)\s*/\s*([\d.]+)")
+SCORE_PCT = re.compile(r"([\d.]+)\s*%")
+LEVEL_MID = 30  # a failed build scoring at least this is "partial" (orange/yellow), below it is a plain failure (red)
+
+
+def score_pct(score: str | None) -> float | None:
+    """'27/129' -> 20.9, '85%' -> 85, otherwise None (same reading as scorePct in app.js)."""
+    if not score:
+        return None
+    try:
+        if m := SCORE_FRAC.search(score):
+            return max(0.0, min(100.0, 100 * float(m[1]) / float(m[2]))) if float(m[2]) > 0 else None
+        if m := SCORE_PCT.search(score):
+            return min(100.0, float(m[1]))
+    except ValueError:
+        pass
+    return None
+
+
+def outcome(status: str, score: str | None) -> str:
+    """'ok' | 'partial' | 'ko' for a finished build (same scale as tone() in app.js)."""
+    if status == "success":
+        return "ok"
+    if status in ("failed", "timeout"):
+        p = score_pct(score)
+        if p is not None and p >= LEVEL_MID:
+            return "partial"
+    return "ko"
+
+
 @api.get("/jobs")
 def list_jobs(user: dict = Depends(require_auth)):
     where, args = ("", ()) if user["role"] == "admin" else (f"WHERE {VISIBLE} ", (user["id"], user["id"]))
     with db.read() as c:
-        return db.rows(
+        jobs = db.rows(
             c,
             "SELECT j.*, u.username AS owner_name, "
             " (SELECT COUNT(*) FROM job_shares s WHERE s.job_id=j.id) AS share_count, "
             " (SELECT COUNT(*) FROM repos r WHERE r.job_id=j.id) AS repo_count, "
             " (SELECT COUNT(*) FROM builds b WHERE b.job_id=j.id AND b.status IN ('queued','running')) AS active, "
-            " (SELECT MAX(COALESCE(finished_at, started_at, queued_at)) FROM builds b WHERE b.job_id=j.id) AS last_activity, "
-            " (SELECT COUNT(*) FROM repos r JOIN builds b ON b.id = (SELECT MAX(id) FROM builds WHERE repo_id=r.id) "
-            "   WHERE r.job_id=j.id AND b.status='success') AS ok, "
-            " (SELECT COUNT(*) FROM repos r JOIN builds b ON b.id = (SELECT MAX(id) FROM builds WHERE repo_id=r.id) "
-            "   WHERE r.job_id=j.id AND b.status IN ('failed','timeout','error')) AS ko "
+            " (SELECT MAX(COALESCE(finished_at, started_at, queued_at)) FROM builds b WHERE b.job_id=j.id) AS last_activity "
             "FROM jobs j LEFT JOIN users u ON u.id=j.owner_id " + where + "ORDER BY j.updated_at DESC",
             *args,
         )
+        latest = db.rows(
+            c,
+            "SELECT r.job_id, b.status, b.score FROM repos r "
+            "JOIN builds b ON b.id = (SELECT MAX(id) FROM builds WHERE repo_id=r.id) "
+            "WHERE b.status IN ('success','failed','timeout','error')",
+        )
+    tally: dict[int, dict[str, int]] = {}
+    for b in latest:
+        t = tally.setdefault(b["job_id"], {"ok": 0, "partial": 0, "ko": 0})
+        t[outcome(b["status"], b["score"])] += 1
+    for j in jobs:
+        j.update(tally.get(j["id"], {"ok": 0, "partial": 0, "ko": 0}))
+    return jobs
 
 
 @api.post("/jobs")

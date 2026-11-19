@@ -178,9 +178,10 @@ function scoreCell(score) {
   return `<div class="scorecell ${lvl(p)}"><div class="meter"><b style="width:${p}%"></b></div><span class="score" style="color:inherit">${esc(score)}</span></div>`;
 }
 
-function stackBar(ok, ko, run, total) {
+function stackBar(ok, partial, ko, run, total) {
   const w = (n) => (total ? (100 * n) / total : 0);
-  return `<div class="stack"><span class="ok" style="width:${w(ok)}%"></span><span class="ko" style="width:${w(ko)}%"></span><span class="run" style="width:${w(run)}%"></span></div>`;
+  return `<div class="stack"><span class="ok" style="width:${w(ok)}%"></span><span class="partial" style="width:${w(partial)}%"></span>` +
+    `<span class="ko" style="width:${w(ko)}%"></span><span class="run" style="width:${w(run)}%"></span></div>`;
 }
 
 function every(ms, fn) {
@@ -263,7 +264,8 @@ const saveOpen = () => { try { localStorage.setItem("agora-open", JSON.stringify
 
 function jobDot(j) {
   // all passing = green, some passing = orange, nothing passing = red
-  const k = j.active ? "run" : j.ko ? (j.ok ? "mid" : "ko") : j.repo_count && j.ok === j.repo_count ? "ok" : "";
+  const bad = j.partial + j.ko;
+  const k = j.active ? "run" : bad ? (j.ok + j.partial ? "mid" : "ko") : j.repo_count && j.ok === j.repo_count ? "ok" : "";
   return `<i class="dot ${k ? "t-" + k : ""}"></i>`;
 }
 
@@ -361,9 +363,9 @@ function resultField() {
   const cells = [];
   for (let i = 0; i < cols * rows; i++) {
     const r = rnd();
-    cells.push(r < .6 ? "success" : r < .78 ? "failed" : r < .84 ? "running" : r < .88 ? "queued" : "none");
+    cells.push(r < .5 ? "ok" : r < .62 ? "good" : r < .72 ? "mid" : r < .82 ? "ko" : r < .88 ? "run" : r < .93 ? "queued" : "none");
   }
-  return `<div class="field" style="--cols:${cols}" aria-hidden="true">${cells.map((c, n) => `<span class="cell c-${c}" style="--n:${n}"></span>`).join("")}</div>`;
+  return `<div class="field" style="--cols:${cols}" aria-hidden="true">${cells.map((c, n) => `<span class="cell t-${c}" style="--n:${n}"></span>`).join("")}</div>`;
 }
 
 async function viewLogin() {
@@ -380,8 +382,8 @@ async function viewLogin() {
         ${resultField()}
         <div>
           <div class="legend">
-            <span><i class="cell c-success"></i>passed</span><span><i class="cell c-failed"></i>failed</span>
-            <span><i class="cell c-running"></i>running</span><span><i class="cell c-queued"></i>queued</span><span><i class="cell c-none"></i>never run</span>
+            <span><i class="cell t-ok"></i>passed</span><span><i class="cell t-good"></i>almost</span><span><i class="cell t-mid"></i>partial</span>
+            <span><i class="cell t-ko"></i>failed</span><span><i class="cell t-run"></i>running</span><span><i class="cell t-none"></i>never run</span>
           </div>
           <div class="stage-foot" style="margin-top:14px">sandbox · --network none · 512 MB · 60 s</div>
         </div>
@@ -550,9 +552,10 @@ const folderCrumbs = (dir, last = true) => {
   }).join(" ");
 };
 
-function resultCell(ok, ko, run, total) {
+function resultCell(ok, partial, ko, run, total) {
   if (!total) return `<span class="muted small">—</span>`;
-  return `<div class="res">${stackBar(ok, ko, run, total)}<div class="txt"><span class="ok">${ok} ok</span><span class="ko">${ko} ko</span>${run ? `<span>${run} en cours</span>` : ""}</div></div>`;
+  return `<div class="res">${stackBar(ok, partial, ko, run, total)}<div class="txt"><span class="ok">${ok} ok</span>` +
+    `${partial ? `<span class="partial">${partial} partial</span>` : ""}<span class="ko">${ko} ko</span>${run ? `<span>${run} running</span>` : ""}</div></div>`;
 }
 
 async function viewJobs(dirEnc = "") {
@@ -571,7 +574,7 @@ async function viewJobs(dirEnc = "") {
       full, jobs: js.length,
       subs: new Set(folderPaths.filter((p) => p.startsWith(full + "/") && p.split("/").length === full.split("/").length + 1)).size,
       repos: js.reduce((n, j) => n + j.repo_count, 0),
-      ok: js.reduce((n, j) => n + j.ok, 0), ko: js.reduce((n, j) => n + j.ko, 0), active: js.reduce((n, j) => n + j.active, 0),
+      ok: js.reduce((n, j) => n + j.ok, 0), partial: js.reduce((n, j) => n + j.partial, 0), ko: js.reduce((n, j) => n + j.ko, 0), active: js.reduce((n, j) => n + j.active, 0),
       last: Math.max(0, ...js.map((j) => j.last_activity || 0)),
     };
   };
@@ -598,7 +601,7 @@ async function viewJobs(dirEnc = "") {
         return `<a class="lr folder" href="#/f/${encodeURIComponent(st.full)}" data-path="${esc(st.full)}">
           <div class="nm"><span class="ficon">${ico("folder", 17)}</span><div><b>${esc(n)}</b><small>${st.subs ? st.subs + " folder" + (st.subs > 1 ? "s" : "") + " · " : ""}${st.jobs} job${st.jobs > 1 ? "s" : ""}</small></div></div>
           <span class="num">${st.repos}</span>
-          ${resultCell(st.ok, st.ko, st.active, st.repos)}
+          ${resultCell(st.ok, st.partial, st.ko, st.active, st.repos)}
           <span class="when">${st.last ? fmtDate(st.last) : ""}</span>
           <span class="acts w"><button class="icon" data-act="rename" title="rename / move">${ico("pencil", 15)}</button><button class="icon danger" data-act="del" title="delete">${ico("trash", 15)}</button></span>
         </a>`;
@@ -607,7 +610,7 @@ async function viewJobs(dirEnc = "") {
         <a class="lr" href="#/jobs/${j.id}">
           <div class="nm"><span class="ficon">${jobDot(j)}</span><div><b>${esc(j.name)}</b><small>${esc(j.description || "no description")}${j.owner_id !== ME.id && j.owner_name ? ` · ${ME.role === "admin" ? "owner" : "by"} ${esc(j.owner_name)}` : j.share_count ? ` · shared with ${j.share_count}` : ""}</small></div></div>
           <span class="num">${j.repo_count}</span>
-          ${resultCell(j.ok, j.ko, j.active, j.repo_count)}
+          ${resultCell(j.ok, j.partial, j.ko, j.active, j.repo_count)}
           <span class="when">${j.last_activity ? fmtDate(j.last_activity) : "never run"}</span>
           <span></span>
         </a>`).join("")}
