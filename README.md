@@ -64,6 +64,9 @@ remis à zéro avec ↺). Un lancement = un clic sur ▶ (dépôt seul, tout, ou
 
 - **Tri et filtres** : la liste des dépôts se filtre par texte et par statut (en échec, réussis, en cours, jamais lancés) et se trie
   (nom, score, statut, date, durée). *Run shown* ne lance que les dépôts affichés : filtre sur « failing » pour relancer les échecs.
+- **Couleurs** : vert à 100 %, jaune à partir de 70 %, orange à partir de 30 %, rouge en dessous et pour les vraies erreurs
+  (clone, docker, timeout sans score). Un build en échec garde la couleur de son score partiel : 85/100 est jaune, pas rouge.
+  Les seuils sont `LEVEL_GOOD` et `LEVEL_MID` en haut de `static/app.js`.
 - **Tests en échec** : une ligne `✘ libellé` dans la sortie est un test raté, une ligne `━━ nom` ouvre une section (c'est ce que
   fait le `record` des exemples). Les échecs sont listés sur la page du build, et l'onglet *Failures* d'un job classe les tests
   par nombre d'étudiants qui les ratent, avec la liste des noms.

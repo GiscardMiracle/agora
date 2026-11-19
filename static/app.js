@@ -132,7 +132,24 @@ const STATUS_LABEL = {
   queued: "queued", running: "running", success: "passed", failed: "failed",
   timeout: "timeout", cancelled: "cancelled", error: "error",
 };
-const badge = (s) => `<span class="badge s-${s || "none"}"><i></i>${s ? STATUS_LABEL[s] || s : "never run"}</span>`;
+// The colour scale: 100 % green, from LEVEL_GOOD yellow, from LEVEL_MID orange, below that (or a real failure) red.
+const LEVEL_GOOD = 70, LEVEL_MID = 30;
+const levelTone = (p) => (p >= 100 ? "ok" : p >= LEVEL_GOOD ? "good" : p >= LEVEL_MID ? "mid" : "ko");
+
+// One tone per build: "ok" | "good" | "mid" | "ko" | "run" | "queued" | "none".
+// A failed run keeps its partial score visible: 85/100 is yellow, not red. Errors (clone, docker) are always red.
+function tone(status, score) {
+  if (!status) return "none";
+  if (status === "success") return "ok";
+  if (status === "running") return "run";
+  if (status === "queued") return "queued";
+  if (status === "cancelled") return "none";
+  if (status === "error") return "ko";
+  const p = scorePct(score);
+  return p === null ? "ko" : levelTone(Math.min(p, 99));
+}
+
+const badge = (s, score) => `<span class="badge t-${tone(s, score)}"><i></i>${s ? STATUS_LABEL[s] || s : "never run"}</span>`;
 const isActive = (s) => s === "queued" || s === "running";
 const isKo = (s) => s === "failed" || s === "timeout" || s === "error";
 const shortRepo = (url) => url.replace(/^(https:\/\/github\.com\/|git@github\.com:)/, "").replace(/\.git$/, "");
@@ -153,7 +170,7 @@ function scorePct(score) {
   m = score.match(/([\d.]+)\s*%/);
   return m ? Math.min(100, +m[1]) : null;
 }
-const lvl = (p) => (p >= 100 ? "lvl-hi" : p >= 50 ? "lvl-mid" : "lvl-lo");
+const lvl = (p) => `t-${levelTone(p)}`;
 
 function scoreCell(score) {
   const p = scorePct(score);
@@ -245,8 +262,9 @@ const openSet = (() => {
 const saveOpen = () => { try { localStorage.setItem("agora-open", JSON.stringify([...openSet])); } catch {} };
 
 function jobDot(j) {
-  const k = j.active ? "running" : j.ko ? "failed" : j.repo_count && j.ok === j.repo_count ? "success" : "";
-  return `<i class="dot ${k ? "d-" + k : ""}"></i>`;
+  // all passing = green, some passing = orange, nothing passing = red
+  const k = j.active ? "run" : j.ko ? (j.ok ? "mid" : "ko") : j.repo_count && j.ok === j.repo_count ? "ok" : "";
+  return `<i class="dot ${k ? "t-" + k : ""}"></i>`;
 }
 
 function currentDir() {
@@ -666,24 +684,25 @@ async function viewJob(id, tab = "repos") {
 function renderStats(repos) {
   const el = document.getElementById("stats");
   if (!el) return;
-  const ok = repos.filter((r) => r.status === "success").length;
-  const ko = repos.filter((r) => isKo(r.status)).length;
+  const count = (...tones) => repos.filter((r) => tones.includes(tone(r.status, r.score))).length;
+  const ok = count("ok"), partial = count("good", "mid"), ko = count("ko");
   const run = repos.filter((r) => isActive(r.status)).length;
   const pcts = repos.map((r) => scorePct(r.score)).filter((p) => p !== null);
   const avg = pcts.length ? Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length) : null;
   const cell = (r) => {
     const tip = `${r.name} · ${r.status ? STATUS_LABEL[r.status] : "never run"}${r.score ? " · " + r.score : ""}`;
     return r.build_id
-      ? `<a class="cell c-${r.status}" href="#/builds/${r.build_id}" title="${esc(tip)}" aria-label="${esc(tip)}"></a>`
-      : `<span class="cell c-none" title="${esc(tip)}"></span>`;
+      ? `<a class="cell t-${tone(r.status, r.score)}" href="#/builds/${r.build_id}" title="${esc(tip)}" aria-label="${esc(tip)}"></a>`
+      : `<span class="cell t-none" title="${esc(tip)}"></span>`;
   };
   el.innerHTML = `
     <div class="figs">
       <div class="fig"><div class="v">${repos.length}</div><div class="k">repositories</div></div>
-      <div class="fig ok"><div class="v">${ok}</div><div class="k">passed</div></div>
-      <div class="fig ko"><div class="v">${ko}</div><div class="k">failed</div></div>
-      <div class="fig run"><div class="v">${run}</div><div class="k">running</div></div>
-      <div class="fig"><div class="v">${avg === null ? "—" : avg + "%"}</div><div class="k">avg score</div></div>
+      <div class="fig t-ok"><div class="v">${ok}</div><div class="k">passed</div></div>
+      <div class="fig t-mid"><div class="v">${partial}</div><div class="k">partial</div></div>
+      <div class="fig t-ko"><div class="v">${ko}</div><div class="k">failed</div></div>
+      <div class="fig t-run"><div class="v">${run}</div><div class="k">running</div></div>
+      <div class="fig ${avg === null ? "" : lvl(avg)}"><div class="v">${avg === null ? "—" : avg + "%"}</div><div class="k">avg score</div></div>
     </div>
     ${repos.length ? `<div class="matrix">${repos.map(cell).join("")}</div>` : ""}`;
 }
@@ -699,12 +718,15 @@ function styleCell(st) {
 // ---- repository list: filter + sort (pure helpers)
 
 const STATUS_FILTERS = [
-  ["", "all statuses"], ["ko", "failing"], ["success", "passed"], ["active", "queued / running"], ["none", "never run"],
+  ["", "all statuses"], ["ko", "failing (all)"], ["red", "failed (red)"], ["partial", "partial score"], ["success", "passed"], ["active", "queued / running"], ["none", "never run"],
 ];
 
-function statusMatches(status, want) {
+function statusMatches(r, want) {
+  const status = r.status;
   if (!want) return true;
   if (want === "ko") return isKo(status);
+  if (want === "red") return tone(status, r.score) === "ko" && isKo(status);
+  if (want === "partial") return ["good", "mid"].includes(tone(status, r.score));
   if (want === "active") return isActive(status);
   if (want === "none") return !status;
   return status === want;
@@ -712,7 +734,7 @@ function statusMatches(status, want) {
 
 function filterRepos(repos, q, status) {
   q = (q || "").trim().toLowerCase();
-  return repos.filter((r) => statusMatches(r.status, status)
+  return repos.filter((r) => statusMatches(r, status)
     && (!q || r.name.toLowerCase().includes(q) || r.url.toLowerCase().includes(q)));
 }
 
@@ -791,7 +813,7 @@ function tabRepos(job, el) {
         <td><div class="who">${avatar(r.name)}<div><div class="name">${esc(r.name)}</div>
           ${r.note ? `<div class="note" title="${esc(r.note)}">${ico("note", 12)} ${esc(r.note)}</div>` : ""}
           <a class="repo-url" href="${esc(r.url.startsWith("git@") ? "https://github.com/" + shortRepo(r.url) : r.url.replace(/\.git$/, ""))}" target="_blank" rel="noopener">${esc(shortRepo(r.url))}</a></div></div></td>
-        <td>${badge(r.status)}</td>
+        <td>${badge(r.status, r.score)}</td>
         <td>${scoreCell(r.score)}</td>
         <td>${styleCell(r.style)}</td>
         <td class="sha">${r.commit_sha ? r.commit_sha.slice(0, 7) : ""}</td>
@@ -1203,7 +1225,7 @@ async function viewBuild(id) {
       <aside class="card history">
         <div class="eyebrow">history · ${idx + 1}/${ran.length}</div>
         <ul>${repo.builds.map((h) => `
-          <li class="h-${h.status} ${h.id === id ? "on" : ""}"><a href="#/builds/${h.id}">#${h.id}</a> ${badge(h.status)}
+          <li class="t-${tone(h.status, h.score)} ${h.id === id ? "on" : ""}"><a href="#/builds/${h.id}">#${h.id}</a> ${badge(h.status, h.score)}
             <span class="score">${esc(h.score || "")}</span><br><span class="muted small">${fmtDate(h.queued_at)} · <span class="sha">${h.commit_sha ? h.commit_sha.slice(0, 7) : ""}</span></span></li>`).join("")}
         </ul>
       </aside>
@@ -1215,8 +1237,8 @@ async function viewBuild(id) {
   const cancelBtn = document.getElementById("cancel");
 
   const renderMeta = (x) => {
-    document.getElementById("badge").innerHTML = badge(x.status);
-    document.getElementById("banner").className = `card banner st-${x.status}`;
+    document.getElementById("badge").innerHTML = badge(x.status, x.score);
+    document.getElementById("banner").className = `card banner t-${tone(x.status, x.score)}`;
     const ring = document.getElementById("ring");
     const p = scorePct(x.score);
     ring.className = `ring ${p === null ? "none" : lvl(p)}`;
