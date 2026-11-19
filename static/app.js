@@ -1029,6 +1029,22 @@ function tabSettings(job, el) {
         <button type="button" class="btn danger" id="del">delete job</button>
       </div>
     </form>
+    <section class="card settings" id="sched">
+      <div class="eyebrow">scheduled runs</div>
+      <p class="muted small">Run every repository at a set time, like a nightly job: a grading deadline, or a recurring check.
+        Scheduled runs use your SSH key and do not count against your launch limit. Times are in <b id="tzname">server time</b>.</p>
+      <div id="sched-list" class="muted small">loading…</div>
+      <form id="sched-add" class="row" style="align-items:end">
+        <label>When
+          <select name="kind"><option value="once">once, at a date and time</option><option value="cron">repeatedly (cron)</option></select></label>
+        <label id="sched-once">Date and time <input type="datetime-local" name="once"></label>
+        <label id="sched-cron" hidden>Cron expression <input name="cron" placeholder="0 18 * * 1-5" autocomplete="off" list="cron-presets"></label>
+        <datalist id="cron-presets"><option value="0 * * * *">every hour</option><option value="0 8 * * *">every day at 08:00</option>
+          <option value="0 18 * * 1-5">weekdays at 18:00</option><option value="*/30 * * * *">every 30 minutes</option><option value="0 0 * * 0">Sundays at midnight</option></datalist>
+        <button class="btn primary">schedule</button>
+      </form>
+      <div class="muted small">Cron: <code>minute hour day-of-month month day-of-week</code>, e.g. <code>30 23 * * 5</code> = Fridays at 23:30.</div>
+    </section>
     <section class="card settings" id="share">
       <div class="eyebrow">sharing</div>
       <p class="muted small">New jobs are private: only you and the admins can see them. Pick who else can see this one.
@@ -1036,6 +1052,50 @@ function tabSettings(job, el) {
       <div id="people" class="people muted small">loading…</div>
       <div class="toolbar"><button class="btn primary" id="saveshare" disabled>save sharing</button></div>
     </section>`;
+  const fmtWhen = (ts) => (ts ? new Date(ts * 1000).toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—");
+  const loadSchedules = async () => {
+    const { tz, items } = await api(`/jobs/${job.id}/schedules`);
+    document.getElementById("tzname").textContent = tz;
+    document.getElementById("sched-list").innerHTML = items.length ? `<table class="repos"><tbody>${items.map((x) => `
+      <tr data-sid="${x.id}" class="${x.enabled ? "" : "off"}">
+        <td><code>${x.kind === "cron" ? esc(x.expr) : "once"}</code></td>
+        <td>${x.enabled ? `next: <b>${fmtWhen(x.next_run)}</b>` : `<span class="muted">${x.kind === "once" && x.last_run ? "done" : "paused"}</span>`}</td>
+        <td class="small muted">${x.last_run ? `last: ${fmtWhen(x.last_run)}${x.last_queued != null ? ` · ${x.last_queued} queued` : ""}` : ""}
+          ${x.last_error ? `<div class="err">${esc(x.last_error)}</div>` : ""}</td>
+        <td class="actions"><button class="icon" data-sact="toggle" title="${x.enabled ? "pause" : "enable"}">${ico(x.enabled ? "stop" : "play", 15)}</button>
+          <button class="icon danger" data-sact="del" title="delete">${ico("trash", 15)}</button></td>
+      </tr>`).join("")}</tbody></table>` : `<span class="muted small">Nothing scheduled.</span>`;
+  };
+  loadSchedules().catch((err) => { if (!(err instanceof Unauthorized || err instanceof Stale)) toast(err.message, "ko"); });
+  const sf = document.getElementById("sched-add");
+  sf.kind.addEventListener("change", () => {
+    document.getElementById("sched-once").hidden = sf.kind.value !== "once";
+    document.getElementById("sched-cron").hidden = sf.kind.value !== "cron";
+  });
+  sf.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const expr = sf.kind.value === "once" ? sf.once.value : sf.cron.value.trim();
+    if (!expr) return toast(sf.kind.value === "once" ? "Pick a date and time" : "Enter a cron expression", "ko");
+    try {
+      await api(`/jobs/${job.id}/schedules`, { method: "POST", json: { kind: sf.kind.value, expr } });
+      toast("Scheduled", "ok");
+      sf.once.value = sf.cron.value = "";
+      await loadSchedules();
+    } catch (err) { if (!(err instanceof Unauthorized)) toast(err.message, "ko"); }
+  });
+  document.getElementById("sched-list").addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-sact]");
+    if (!b) return;
+    const tr = b.closest("tr"), id = tr.dataset.sid;
+    try {
+      if (b.dataset.sact === "del") {
+        if (!confirm("Delete this schedule?")) return;
+        await api(`/schedules/${id}`, { method: "DELETE" });
+      } else await api(`/schedules/${id}`, { method: "PATCH", json: { enabled: tr.classList.contains("off") } });
+      await loadSchedules();
+    } catch (err) { if (!(err instanceof Unauthorized)) toast(err.message, "ko"); }
+  });
+
   api("/directory").then((people) => {
     const box = document.getElementById("people");
     const on = new Set(job.shares || []);

@@ -61,6 +61,21 @@ CREATE TABLE IF NOT EXISTS builds (
 CREATE INDEX IF NOT EXISTS builds_repo ON builds(repo_id, id);
 CREATE INDEX IF NOT EXISTS builds_status ON builds(status, id);
 
+CREATE TABLE IF NOT EXISTS schedules (
+    id          INTEGER PRIMARY KEY,
+    job_id      INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL CHECK (kind IN ('once', 'cron')),
+    expr        TEXT NOT NULL,           -- 'once': YYYY-MM-DDTHH:MM   'cron': 5 fields
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    user_id     INTEGER,                 -- whose SSH key clones the repositories
+    next_run    REAL,
+    last_run    REAL,
+    last_queued INTEGER,
+    last_error  TEXT,
+    created_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS schedules_due ON schedules(enabled, next_run);
+
 CREATE TABLE IF NOT EXISTS users (
     id              INTEGER PRIMARY KEY,
     username        TEXT NOT NULL UNIQUE COLLATE NOCASE,

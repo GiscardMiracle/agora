@@ -21,6 +21,9 @@ GITHUB_TOKEN = os.environ.get("AGORA_GITHUB_TOKEN", "")
 # Only commit emails ending with this are used to name a group (e.g. "@my-school.eu"). Empty = any real email.
 EMAIL_DOMAIN = os.environ.get("AGORA_EMAIL_DOMAIN", "").strip().lower()
 
+# Time zone of scheduled runs (e.g. Europe/Paris). Empty = the server's own time.
+TZ = os.environ.get("AGORA_TZ", "").strip()
+
 # Number of builds running in parallel. Keep it low on a 2 GB VPS.
 WORKERS = _int("AGORA_WORKERS", 2)
 CLONE_TIMEOUT = _int("AGORA_CLONE_TIMEOUT", 120)

@@ -446,3 +446,9 @@ body[data-access="shared"] .own { display: none !important; }
 /* repository notes */
 .note { display: flex; gap: 5px; align-items: center; color: var(--mute); font-size: 11.5px; max-width: 360px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .icon.has-note { color: var(--accent); }
+
+/* scheduled runs */
+#sched-list { margin: 8px 0 12px; }
+#sched-list tr.off td { opacity: .55; }
+#sched-add { margin: 10px 0; }
+#sched-add label[hidden] { display: none; }

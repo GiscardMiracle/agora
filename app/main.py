@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import archive, config, db, github, keys, repos, users
+from . import archive, config, db, github, keys, repos, schedule, users
 from .runner import Runner, log_path, remove_logs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -47,8 +47,10 @@ async def lifespan(_: FastAPI):
     users.bootstrap()
     await runner.start()
     purger = asyncio.create_task(archive.purge_loop())
+    scheduler = asyncio.create_task(schedule.loop(enqueue_for))
     yield
     purger.cancel()
+    scheduler.cancel()
     await runner.stop()
 
 
@@ -109,12 +111,15 @@ def check_file_name(name: str) -> str:
     return name
 
 
-def enqueue(c, job_id: int, repo_ids: list[int], user: dict) -> int:
-    """Queue builds for `user`. Enforces the SSH key and the launch quota (admins are exempt)."""
+def enqueue(c, job_id: int, repo_ids: list[int], user: dict, count_launch: bool = True) -> int:
+    """Queue builds for `user`. Enforces the SSH key and the launch quota (admins are exempt).
+
+    Scheduled runs pass count_launch=False: the quota limits manual launches, not what the owner planned.
+    """
     if not keys.has_key(user["id"]):
         raise HTTPException(400, "You have no SSH key, so repositories cannot be cloned. "
                                  "Generate one in \"Account\" and add it to GitHub.")
-    if user["role"] != "admin":
+    if count_launch and user["role"] != "admin":
         fresh = db.row(c, "SELECT launch_limit, launch_count FROM users WHERE id=?", user["id"])
         if not fresh or fresh["launch_count"] >= fresh["launch_limit"]:
             raise HTTPException(403, f"Launch limit reached ({fresh['launch_limit'] if fresh else 0}). "
@@ -133,9 +138,19 @@ def enqueue(c, job_id: int, repo_ids: list[int], user: dict) -> int:
             job_id, rid, db.now(), user["id"],
         )
         n += 1
-    if n and user["role"] != "admin":
+    if n and count_launch and user["role"] != "admin":
         c.execute("UPDATE users SET launch_count=launch_count+1 WHERE id=?", user["id"])
     return n
+
+
+def enqueue_for(job_id: int, user_id: int) -> int:
+    """Used by the scheduler: queue every repository of the job on behalf of the schedule's creator."""
+    with db.tx() as c:
+        u = db.row(c, "SELECT id, role FROM users WHERE id=?", user_id)
+        if not u:
+            raise RuntimeError("the user who created this schedule no longer exists")
+        ids = [r["id"] for r in db.rows(c, "SELECT id FROM repos WHERE job_id=?", job_id)]
+        return enqueue(c, job_id, ids, u, count_launch=False)
 
 
 def job_access(c, job_id: int, user: dict) -> str | None:
@@ -750,6 +765,67 @@ def rename_repo(repo_id: int, body: RepoPatch, user: dict = Depends(require_auth
     with db.tx() as c:
         get_or_404(c, "SELECT id FROM repos WHERE id=?", repo_id)
         c.execute("UPDATE repos SET name=?, renamed=1 WHERE id=?", body.name.strip(), repo_id)
+    return {"ok": True}
+
+
+class ScheduleIn(BaseModel):
+    kind: str
+    expr: str = Field(min_length=1, max_length=100)
+
+
+class SchedulePatch(BaseModel):
+    enabled: bool
+
+
+@api.get("/jobs/{job_id}/schedules")
+def list_schedules(job_id: int, user: dict = Depends(require_auth)):
+    guard_job(job_id, user, True)
+    with db.read() as c:
+        items = db.rows(c, "SELECT * FROM schedules WHERE job_id=? ORDER BY COALESCE(next_run, 1e18), id", job_id)
+    return {"tz": schedule.tz_name(), "items": items}
+
+
+@api.post("/jobs/{job_id}/schedules")
+def create_schedule(job_id: int, body: ScheduleIn, user: dict = Depends(require_auth)):
+    guard_job(job_id, user, True)
+    try:
+        nxt = schedule.first_run(body.kind, body.expr.strip(), db.now())
+    except schedule.ScheduleError as e:
+        raise HTTPException(400, str(e))
+    if not keys.has_key(user["id"]):
+        raise HTTPException(400, "You have no SSH key: generate one in \"Account\" first, the scheduled runs clone with it.")
+    with db.tx() as c:
+        cur = c.execute(
+            "INSERT INTO schedules (job_id, kind, expr, user_id, next_run, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            job_id, body.kind, body.expr.strip(), user["id"], nxt, db.now(),
+        )
+    return {"id": cur.lastrowid, "next_run": nxt}
+
+
+@api.patch("/schedules/{schedule_id}")
+def toggle_schedule(schedule_id: int, body: SchedulePatch, user: dict = Depends(require_auth)):
+    with db.tx() as c:
+        s = get_or_404(c, "SELECT * FROM schedules WHERE id=?", schedule_id)
+    guard_job(s["job_id"], user, True)
+    nxt = s["next_run"]
+    if body.enabled:
+        try:  # re-arming: a cron goes to its next occurrence, a one-shot must still be in the future
+            nxt = schedule.first_run(s["kind"], s["expr"], db.now())
+        except schedule.ScheduleError as e:
+            raise HTTPException(400, str(e))
+    with db.tx() as c:
+        c.execute("UPDATE schedules SET enabled=?, next_run=?, last_error=NULL WHERE id=?",
+                  1 if body.enabled else 0, nxt, schedule_id)
+    return {"ok": True, "next_run": nxt}
+
+
+@api.delete("/schedules/{schedule_id}")
+def delete_schedule(schedule_id: int, user: dict = Depends(require_auth)):
+    with db.tx() as c:
+        s = get_or_404(c, "SELECT job_id FROM schedules WHERE id=?", schedule_id)
+    guard_job(s["job_id"], user, True)
+    with db.tx() as c:
+        c.execute("DELETE FROM schedules WHERE id=?", schedule_id)
     return {"ok": True}
 
 
