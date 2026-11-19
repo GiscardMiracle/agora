@@ -64,6 +64,27 @@ function toast(msg, kind = "") {
 }
 
 class Unauthorized extends Error {}
+// Thrown when the answer to a GET arrives after the user already moved to another page: ignored everywhere.
+class Stale extends Error {}
+
+let routeSeq = 0;
+
+async function fetchRetry(url, opts, tries) {
+  for (let i = 1; ; i++) {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 25000);
+    try {
+      const r = await fetch(url, { ...opts, signal: ctl.signal });
+      if (r.status >= 502 && r.status <= 504 && i < tries) { await sleep(400 * i); continue; }
+      return r;
+    } catch (e) {
+      if (i >= tries) throw new Error("Server unreachable, try again.");
+      await sleep(400 * i);
+    } finally {
+      clearTimeout(t);
+    }
+  }
+}
 
 async function api(path, { method = "GET", json, form } = {}) {
   const opts = { method, headers: {} };
@@ -71,7 +92,10 @@ async function api(path, { method = "GET", json, form } = {}) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(json);
   } else if (form) opts.body = form;
-  const r = await fetch(`/api${path}`, opts);
+  const seq = routeSeq, get = method === "GET";
+  // Only idempotent reads are retried: a POST must never run twice.
+  const r = await fetchRetry(`/api${path}`, opts, get ? 3 : 1);
+  if (get && seq !== routeSeq) throw new Stale();
   if (r.status === 401 && path !== "/login") {
     setMe(null);
     location.hash = "#/login";
@@ -147,7 +171,7 @@ function every(ms, fn) {
     while (!stop) {
       await sleep(ms);
       if (stop) break;
-      try { await fn(); } catch (e) { if (e instanceof Unauthorized) break; }
+      try { await fn(); } catch (e) { if (e instanceof Unauthorized || e instanceof Stale) break; }
     }
   })();
   cleanups.push(() => (stop = true));
@@ -177,9 +201,14 @@ const routes = [
 async function route() {
   cleanups.forEach((f) => f());
   cleanups = [];
+  routeSeq++;
   const h = location.hash || "#/";
   if (!ME && h !== "#/login") {
-    setMe((await api("/me")).user);
+    try { setMe((await api("/me")).user); } catch (e) {
+      if (e instanceof Stale) return;
+      $app.innerHTML = `<p class="err">Error: ${esc(e.message)}</p>`;
+      return;
+    }
     if (!ME) { location.hash = "#/login"; return; }
   }
   document.body.classList.toggle("auth", h === "#/login");
@@ -191,7 +220,7 @@ async function route() {
       try {
         await view(...m.slice(1));
       } catch (e) {
-        if (!(e instanceof Unauthorized)) $app.innerHTML = `<p class="err">Error: ${esc(e.message)}</p>`;
+        if (!(e instanceof Unauthorized) && !(e instanceof Stale)) $app.innerHTML = `<p class="err">Error: ${esc(e.message)}</p>`;
       }
       return;
     }
@@ -259,7 +288,7 @@ async function renderSidebar() {
     const [jobs, folders, me] = await Promise.all([api("/jobs"), api("/folders"), api("/me")]);
     TREE = { jobs, folders };
     if (me.user) ME = { ...ME, ...me.user };
-  } catch (e) { if (e instanceof Unauthorized) return; }
+  } catch (e) { if (e instanceof Unauthorized || e instanceof Stale) return; }
   const cur = currentDir();
   const light = document.documentElement.dataset.theme === "light";
   const path = location.hash;
