@@ -2,6 +2,7 @@
 import fnmatch
 import json
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,17 +28,30 @@ def _get(path: str, params: dict | None = None):
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "agora",
     })
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        if e.code == 401:
-            raise GitHubError("GitHub token is invalid or expired.")
-        if e.code == 403 or e.code == 429:
-            raise GitHubError("GitHub API rate limit reached (or access denied). Try again later.")
-        raise
-    except (urllib.error.URLError, TimeoutError) as e:
-        raise GitHubError(f"GitHub unreachable: {e}")
+    last: Exception | None = None
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                raise GitHubError("GitHub token is invalid or expired.")
+            retry_after = e.headers.get("Retry-After") if e.headers else None
+            if e.code in (403, 429) and retry_after and retry_after.isdigit() and int(retry_after) <= 20:
+                last = e
+                time.sleep(int(retry_after))  # secondary rate limit: GitHub says how long to wait
+                continue
+            if e.code in (403, 429):
+                raise GitHubError("GitHub API rate limit reached (or access denied). Try again later.")
+            if e.code >= 500:  # GitHub having a bad moment
+                last = e
+                time.sleep(1 + attempt)
+                continue
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            last = e
+            time.sleep(1 + attempt)
+    raise GitHubError(f"GitHub unreachable after several attempts: {last}")
 
 
 def _paginate(path: str, params: dict, max_pages: int):
@@ -67,21 +81,28 @@ def list_repos(owner: str, pattern: str) -> list[str]:
     if not ORG_RE.match(owner):
         raise GitHubError("Invalid organization name.")
     matches("", pattern)  # validates a regex early
-    names: set[str] = set()
-    try:
-        names |= {r["name"] for r in _paginate(f"/orgs/{owner}/repos", {"type": "all"}, 100)}
-    except urllib.error.HTTPError as e:
-        if e.code != 404:
-            raise GitHubError(f"GitHub error {e.code}.")
+
+    def from_org() -> set[str]:
+        try:
+            return {r["name"] for r in _paginate(f"/orgs/{owner}/repos", {"type": "all"}, 100)}
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise GitHubError(f"GitHub error {e.code}.")
         try:  # not an organisation: a plain user account
-            names |= {r["name"] for r in _paginate(f"/users/{owner}/repos", {"type": "owner"}, 100)}
+            return {r["name"] for r in _paginate(f"/users/{owner}/repos", {"type": "owner"}, 100)}
         except urllib.error.HTTPError:
-            pass
-    try:
-        mine = _paginate("/user/repos", {"affiliation": "owner,collaborator,organization_member"}, 100)
-        names |= {r["name"] for r in mine if (r.get("owner") or {}).get("login", "").lower() == owner.lower()}
-    except urllib.error.HTTPError as e:
-        raise GitHubError(f"GitHub error {e.code}.")
+            return set()
+
+    def from_me() -> set[str]:
+        try:
+            mine = _paginate("/user/repos", {"affiliation": "owner,collaborator,organization_member"}, 100)
+            return {r["name"] for r in mine if (r.get("owner") or {}).get("login", "").lower() == owner.lower()}
+        except urllib.error.HTTPError as e:
+            raise GitHubError(f"GitHub error {e.code}.")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:  # the two listings are independent: fetch them together
+        a, b = pool.submit(from_org), pool.submit(from_me)
+        names = a.result() | b.result()
     if not names:
         raise GitHubError(f'No repository of "{owner}" is visible to the GitHub token (wrong organization name, '
                           "or the token cannot access it: use a classic token with the repo scope).")
@@ -98,7 +119,7 @@ def authors(owner: str, repo: str) -> list[str]:
     """Distinct author emails (restricted to AGORA_EMAIL_DOMAIN when set) that committed to the repository ([] if empty or unreadable)."""
     seen: dict[str, None] = {}
     try:
-        for c in _paginate(f"/repos/{owner}/{repo}/commits", {}, 3):
+        for c in _paginate(f"/repos/{owner}/{repo}/commits", {}, 2):
             email = ((c.get("commit") or {}).get("author") or {}).get("email", "").strip().lower()
             if _wanted(email):
                 seen[email] = None
@@ -118,5 +139,5 @@ def group_name(owner: str, repo: str) -> str:
 
 
 def names_for(owner: str, repos: list[str]) -> dict[str, str]:
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=12) as pool:
         return dict(zip(repos, pool.map(lambda r: group_name(owner, r), repos)))
