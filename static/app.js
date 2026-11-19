@@ -688,6 +688,14 @@ function renderStats(repos) {
     ${repos.length ? `<div class="matrix">${repos.map(cell).join("")}</div>` : ""}`;
 }
 
+// Coding-style violations: {"major": n, "minor": n, "info": n} (object, or JSON text from the job endpoint).
+function styleCell(st) {
+  if (typeof st === "string") { try { st = JSON.parse(st); } catch { st = null; } }
+  if (!st) return "";
+  return `<span class="sty" title="coding style: ${st.major} major, ${st.minor} minor, ${st.info} info">` +
+    `<b class="maj">${st.major}</b><b class="min">${st.minor}</b><b class="inf">${st.info}</b></span>`;
+}
+
 // ---- repository list: filter + sort (pure helpers)
 
 const STATUS_FILTERS = [
@@ -743,7 +751,7 @@ function tabRepos(job, el) {
       <select id="f-sort" title="sort">${SORTS.map(([v, l]) => `<option value="${v}">sort: ${l}</option>`).join("")}</select>
     </div>
     <div class="tablewrap"><table class="repos">
-      <thead><tr><th>Student</th><th>Status</th><th>Score</th><th>Commit</th><th>Time</th><th>Date</th><th></th></tr></thead>
+      <thead><tr><th>Student</th><th>Status</th><th>Score</th><th title="coding style: major / minor / info">Style</th><th>Commit</th><th>Time</th><th>Date</th><th></th></tr></thead>
       <tbody id="rows"></tbody>
     </table></div>
     <section class="card add w own">
@@ -785,6 +793,7 @@ function tabRepos(job, el) {
           <a class="repo-url" href="${esc(r.url.startsWith("git@") ? "https://github.com/" + shortRepo(r.url) : r.url.replace(/\.git$/, ""))}" target="_blank" rel="noopener">${esc(shortRepo(r.url))}</a></div></div></td>
         <td>${badge(r.status)}</td>
         <td>${scoreCell(r.score)}</td>
+        <td>${styleCell(r.style)}</td>
         <td class="sha">${r.commit_sha ? r.commit_sha.slice(0, 7) : ""}</td>
         <td class="small">${fmtDur(r)}</td>
         <td class="muted small">${fmtDate(r.finished_at || r.started_at || r.queued_at)}</td>
@@ -796,7 +805,7 @@ function tabRepos(job, el) {
           <button class="icon own" data-act="rename" title="rename">${ico("pencil", 15)}</button>
           <button class="icon danger own" data-act="del" title="delete">${ico("trash", 15)}</button>
         </td>
-      </tr>`).join("") || `<tr><td colspan="7" class="muted" style="text-align:center;padding:28px">No repositories — add them below.</td></tr>`;
+      </tr>`).join("") || `<tr><td colspan="8" class="muted" style="text-align:center;padding:28px">No repositories — add them below.</td></tr>`;
     renderStats(repos);
   };
   render();
@@ -1217,6 +1226,7 @@ async function viewBuild(id) {
       `build #${x.id}`,
       x.commit_sha ? `commit <span class="sha">${x.commit_sha.slice(0, 10)}</span>` : null,
       x.exit_code !== null && x.exit_code !== undefined ? `exit ${x.exit_code}` : null,
+      x.style ? `style ${styleCell(x.style)}` : null,
       `time ${fmtDur(x)}`,
       fmtDate(x.started_at || x.queued_at),
       x.error ? `<span class="err">${esc(x.error)}</span>` : null,

@@ -38,6 +38,10 @@ ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
 SECTION_RE = re.compile(r"^\s*━━\s*(.+?)\s*$")
 FAILED_RE = re.compile(r"^\s*[✘✗]\s+(.+?)\s*$")
 MAX_FAILED_TESTS = 300
+# Coding-style checkers (banana-check-repo, epiclang) report "file.c:12: MAJOR:C-F3 ..." or a clang
+# diagnostic carrying the rule id ("... warning: ... [C-G1]"). Each such line is one violation.
+STYLE_RE = re.compile(r"\b(MAJOR|MINOR|INFO)\s*:\s*C-[A-Z]\d+")
+STYLE_DIAG_RE = re.compile(r"\b(warning|error)\b.*\bC-[A-Z]\d+\b")
 
 C_INFO = "\x1b[36m"
 C_CMD = "\x1b[1;35m"
@@ -88,6 +92,7 @@ class LogWriter:
         self._line = b""
         self.score: str | None = None
         self.failures: list[list[str]] = []
+        self.style = {"major": 0, "minor": 0, "info": 0}
         self._section = ""
         self._tail = b""
 
@@ -119,6 +124,10 @@ class LogWriter:
             if m := SCORE_RE.search(line):
                 self.score = m[1].strip().decode(errors="replace")
             text = line.decode(errors="replace").rstrip("\r")
+            if m := STYLE_RE.search(text):
+                self.style[m[1].lower()] += 1
+            elif m := STYLE_DIAG_RE.search(text):
+                self.style["major" if m[1] == "error" else "minor"] += 1
             if m := SECTION_RE.match(text):
                 self._section = m[1][:80]
             elif (m := FAILED_RE.match(text)) and len(self.failures) < MAX_FAILED_TESTS:
@@ -254,12 +263,13 @@ class Runner:
     def _finish(self, build: dict, status: str, **fields) -> None:
         out = build.get("_out")
         failed = json.dumps(out.failures, ensure_ascii=False) if out and out.failures else None
+        style = json.dumps(out.style) if out and any(out.style.values()) else None
         with db.tx() as c:
             cur = c.execute(
-                "UPDATE builds SET status=?, exit_code=?, score=?, commit_sha=?, error=?, finished_at=?, failed_tests=? "
+                "UPDATE builds SET status=?, exit_code=?, score=?, commit_sha=?, error=?, finished_at=?, failed_tests=?, style=? "
                 "WHERE id=?",
                 status, fields.get("exit_code"), fields.get("score"), fields.get("commit_sha"),
-                fields.get("error"), db.now(), failed, build["id"],
+                fields.get("error"), db.now(), failed, style, build["id"],
             )
             if cur.rowcount == 0:  # repo or job deleted while the build was running
                 remove_logs([build["id"]])

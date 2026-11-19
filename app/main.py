@@ -454,7 +454,7 @@ def get_job(job_id: int, user: dict = Depends(require_auth)):
         )
         job["repos"] = db.rows(
             c,
-            "SELECT r.id, r.name, r.url, r.note, b.id AS build_id, b.status, b.score, b.exit_code, "
+            "SELECT r.id, r.name, r.url, r.note, b.id AS build_id, b.status, b.score, b.style, b.exit_code, "
             " b.commit_sha, b.queued_at, b.started_at, b.finished_at "
             "FROM repos r LEFT JOIN builds b ON b.id = (SELECT MAX(id) FROM builds WHERE repo_id=r.id) "
             "WHERE r.job_id=? ORDER BY r.name COLLATE NOCASE",
@@ -929,6 +929,13 @@ def cancel_build(build_id: int, user: dict = Depends(require_auth)):
     return {"ok": runner.cancel(build_id)}
 
 
+def parse_style(raw: str | None) -> dict | None:
+    try:
+        return json.loads(raw) if raw else None
+    except ValueError:
+        return None
+
+
 def parse_failed(raw: str | None) -> list[list[str]]:
     try:
         return json.loads(raw) if raw else []
@@ -973,6 +980,7 @@ def get_build(build_id: int, user: dict = Depends(require_auth)):
             build_id,
         )
     b["failed_tests"] = parse_failed(b["failed_tests"])
+    b["style"] = parse_style(b["style"])
     return b
 
 
@@ -998,17 +1006,22 @@ def build_log(build_id: int, offset: int = 0, user: dict = Depends(require_auth)
     )
 
 
+def style_cells(raw: str | None) -> list:
+    st = parse_style(raw)
+    return [st["major"], st["minor"], st["info"]] if st else ["", "", ""]
+
+
 @api.get("/jobs/{job_id}/export.csv")
 def export_csv(job_id: int, user: dict = Depends(require_auth)):
     guard_job(job_id, user)
     job = get_job(job_id, user)
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["name", "url", "status", "score", "exit_code", "commit", "finished_at", "note"])
+    w.writerow(["name", "url", "status", "score", "exit_code", "commit", "finished_at", "style_major", "style_minor", "style_info", "note"])
     for r in job["repos"]:
         fin = datetime.fromtimestamp(r["finished_at"]).isoformat(timespec="seconds") if r["finished_at"] else ""
         w.writerow([r["name"], r["url"], r["status"] or "", r["score"] or "", r["exit_code"] if r["exit_code"] is not None else "",
-                    r["commit_sha"] or "", fin, r["note"] or ""])
+                    r["commit_sha"] or "", fin, *style_cells(r["style"]), r["note"] or ""])
     safe = re.sub(r"[^\w.-]+", "_", job["name"]) or "job"
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="{safe}.csv"'})
