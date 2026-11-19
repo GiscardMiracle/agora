@@ -8,6 +8,7 @@ real terminal) and is appended to data/logs/<build_id>.log, which the UI polls.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -33,6 +34,10 @@ CLONE_ATTEMPTS = 3
 KEEP_BUILDS_PER_REPO = int(os.environ.get("AGORA_KEEP_BUILDS", 20))
 SCORE_RE = re.compile(rb"AGORA_SCORE:\s*([^\r\n]{1,40})")
 ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
+# Test sets print "━━ section" headers and "✘ label" lines for failed tests (see examples/).
+SECTION_RE = re.compile(r"^\s*━━\s*(.+?)\s*$")
+FAILED_RE = re.compile(r"^\s*[✘✗]\s+(.+?)\s*$")
+MAX_FAILED_TESTS = 300
 
 C_INFO = "\x1b[36m"
 C_CMD = "\x1b[1;35m"
@@ -82,6 +87,8 @@ class LogWriter:
         self.redact = [r.encode() for r in redact if r]
         self._line = b""
         self.score: str | None = None
+        self.failures: list[list[str]] = []
+        self._section = ""
         self._tail = b""
 
     def saw(self, needle: bytes) -> bool:
@@ -107,9 +114,15 @@ class LogWriter:
     def _scan_score(self, data: bytes) -> None:
         self._line = (self._line + data)[-8192:]
         *lines, self._line = self._line.split(b"\n")
-        for line in lines:
-            if m := SCORE_RE.search(ANSI_RE.sub(b"", line)):
+        for raw in lines:
+            line = ANSI_RE.sub(b"", raw)
+            if m := SCORE_RE.search(line):
                 self.score = m[1].strip().decode(errors="replace")
+            text = line.decode(errors="replace").rstrip("\r")
+            if m := SECTION_RE.match(text):
+                self._section = m[1][:80]
+            elif (m := FAILED_RE.match(text)) and len(self.failures) < MAX_FAILED_TESTS:
+                self.failures.append([self._section, m[1][:200]])
 
     def meta(self, text: str, force: bool = False) -> None:
         if self.truncated and not force:
@@ -225,12 +238,14 @@ class Runner:
             return b
 
     def _finish(self, build: dict, status: str, **fields) -> None:
+        out = build.get("_out")
+        failed = json.dumps(out.failures, ensure_ascii=False) if out and out.failures else None
         with db.tx() as c:
             cur = c.execute(
-                "UPDATE builds SET status=?, exit_code=?, score=?, commit_sha=?, error=?, finished_at=? "
+                "UPDATE builds SET status=?, exit_code=?, score=?, commit_sha=?, error=?, finished_at=?, failed_tests=? "
                 "WHERE id=?",
                 status, fields.get("exit_code"), fields.get("score"), fields.get("commit_sha"),
-                fields.get("error"), db.now(), build["id"],
+                fields.get("error"), db.now(), failed, build["id"],
             )
             if cur.rowcount == 0:  # repo or job deleted while the build was running
                 remove_logs([build["id"]])
@@ -277,6 +292,7 @@ class Runner:
         await asyncio.to_thread(_rmtree, work)
         tests_dir.mkdir(parents=True)
         out = LogWriter(log_path(bid), redact=[config.GITHUB_TOKEN])
+        b["_out"] = out
         sha = None
         try:
             out.meta(f"build #{bid} · {b['job_name']} · {b['repo_name']}")

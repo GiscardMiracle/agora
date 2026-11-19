@@ -630,7 +630,7 @@ async function viewJobs(dirEnc = "") {
 async function viewJob(id, tab = "repos") {
   const job = await api(`/jobs/${id}`);
   setNav(`<a href="#/">jobs</a> ${folderCrumbs(job.folder || "", false)} <span class="sep">/</span> <span class="crumb">${esc(job.name)}</span>`);
-  const tabs = [["repos", "Repositories", job.repos.length], ["files", "Test files", job.files.length]];
+  const tabs = [["repos", "Repositories", job.repos.length], ["failures", "Failures", null], ["files", "Test files", job.files.length]];
   document.body.dataset.access = job.access;
   if (canWrite() && job.access === "owner") tabs.push(["settings", "Settings", null]);
   const visibility = job.access === "shared"
@@ -656,6 +656,7 @@ async function viewJob(id, tab = "repos") {
   if (tab !== "repos") every(3000, async () => renderStats((await api(`/jobs/${id}`)).repos));
   const el = document.getElementById("tab");
   if (tab === "files") return tabFiles(job, el);
+  if (tab === "failures") return tabFailures(job, el);
   if (tab === "settings" && canWrite() && job.access === "owner") return tabSettings(job, el);
   return tabRepos(job, el);
 }
@@ -886,6 +887,23 @@ function tabRepos(job, el) {
   });
 }
 
+async function tabFailures(job, el) {
+  const { graded, tests } = await api(`/jobs/${job.id}/failures`);
+  if (!tests.length) {
+    el.innerHTML = `<p class="muted" style="padding:24px;text-align:center">No failed test recorded yet.
+      Run the repositories first. Tests are read from the log: a "✘ label" line is a failure, a "━━ name" line opens a section.</p>`;
+    return;
+  }
+  el.innerHTML = `<div class="muted small" style="margin:12px 0">Most-failed tests across the latest build of each repository (${graded} graded).</div>
+    <div class="tablewrap"><table class="repos fail-table"><thead><tr><th>Test</th><th>Failing</th><th>Who</th></tr></thead><tbody>
+    ${tests.map((t) => {
+      const pct = graded ? Math.round((100 * t.count) / graded) : 0;
+      return `<tr><td><div class="muted small">${esc(t.section || "")}</div><div class="name">${esc(t.label)}</div></td>
+        <td style="white-space:nowrap"><b>${t.count}</b> <span class="muted small">${pct}%</span><div class="bar"><b style="width:${pct}%"></b></div></td>
+        <td class="small">${t.repos.slice(0, 12).map((r) => `<a href="#/builds/${r.build_id}">${esc(r.name)}</a>`).join(", ")}${t.repos.length > 12 ? ` <span class="muted">+${t.repos.length - 12}</span>` : ""}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
+}
+
 function tabFiles(job, el) {
   el.innerHTML = `
     <div class="files">
@@ -1074,6 +1092,7 @@ async function viewBuild(id) {
       <button class="btn danger w" id="cancel">${ico("stop", 14)}Cancel</button>
       <button class="btn" data-go="${next?.build_id || ""}" ${next ? "" : "disabled"} title="next">${ico("fwd", 14)}</button>
     </section>
+    <section class="card fails" id="fails" hidden></section>
     <div class="build">
       <div class="terminal">
         <div class="term-bar"><i></i><i></i><i></i><span>agora@sandbox: /work — build #${id} — ${esc(shortRepo(b.repo_url))}</span>
@@ -1111,6 +1130,14 @@ async function viewBuild(id) {
       x.error ? `<span class="err">${esc(x.error)}</span>` : null,
     ].filter(Boolean).join(" · ");
     cancelBtn.style.display = isActive(x.status) ? "" : "none";
+    const fails = document.getElementById("fails"), list = x.failed_tests || [];
+    fails.hidden = !list.length;
+    if (list.length) {
+      const by = new Map();
+      for (const [sec, label] of list) (by.get(sec) || by.set(sec, []).get(sec)).push(label);
+      fails.innerHTML = `<div class="eyebrow">${list.length} failed test${list.length > 1 ? "s" : ""}</div>` +
+        [...by].map(([sec, labels]) => `<div class="f-sec"><b>${esc(sec || "tests")}</b><ul>${labels.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></div>`).join("");
+    }
   };
   renderMeta(b);
 

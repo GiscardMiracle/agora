@@ -1,6 +1,7 @@
 import asyncio
 import csv
 import io
+import json
 import logging
 import os
 import re
@@ -815,16 +816,51 @@ def cancel_build(build_id: int, user: dict = Depends(require_auth)):
     return {"ok": runner.cancel(build_id)}
 
 
+def parse_failed(raw: str | None) -> list[list[str]]:
+    try:
+        return json.loads(raw) if raw else []
+    except ValueError:
+        return []
+
+
+@api.get("/jobs/{job_id}/failures")
+def job_failures(job_id: int, user: dict = Depends(require_auth)):
+    """Failed tests of the latest build of each repository, grouped: which test breaks for how many students."""
+    guard_job(job_id, user)
+    with db.read() as c:
+        rows = db.rows(
+            c,
+            "SELECT r.id AS repo_id, r.name, b.id AS build_id, b.failed_tests FROM repos r "
+            "JOIN builds b ON b.id = (SELECT MAX(id) FROM builds WHERE repo_id=r.id) "
+            "WHERE r.job_id=? AND b.failed_tests IS NOT NULL",
+            job_id,
+        )
+        total = db.row(c, "SELECT COUNT(*) AS n FROM repos r JOIN builds b ON b.id = (SELECT MAX(id) FROM builds WHERE repo_id=r.id) "
+                          "WHERE r.job_id=? AND b.status IN ('success','failed','timeout')", job_id)["n"]
+    groups: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        for section, label in parse_failed(r["failed_tests"]):
+            g = groups.setdefault((section, label), {"section": section, "label": label, "repos": []})
+            if r["repo_id"] not in {x["id"] for x in g["repos"]}:
+                g["repos"].append({"id": r["repo_id"], "name": r["name"], "build_id": r["build_id"]})
+    out = sorted(groups.values(), key=lambda g: (-len(g["repos"]), g["section"], g["label"]))
+    for g in out:
+        g["count"] = len(g["repos"])
+    return {"graded": total, "tests": out}
+
+
 @api.get("/builds/{build_id}")
 def get_build(build_id: int, user: dict = Depends(require_auth)):
     guard_build(build_id, user)
     with db.read() as c:
-        return get_or_404(
+        b = get_or_404(
             c,
             "SELECT b.*, r.name AS repo_name, r.url AS repo_url, j.name AS job_name "
             "FROM builds b JOIN repos r ON r.id=b.repo_id JOIN jobs j ON j.id=b.job_id WHERE b.id=?",
             build_id,
         )
+    b["failed_tests"] = parse_failed(b["failed_tests"])
+    return b
 
 
 @api.get("/builds/{build_id}/log")
