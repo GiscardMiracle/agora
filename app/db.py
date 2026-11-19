@@ -133,6 +133,7 @@ MIGRATIONS = [
     ("jobs", "github_org", "TEXT NOT NULL DEFAULT ''"),
     ("jobs", "repo_pattern", "TEXT NOT NULL DEFAULT ''"),
     ("repos", "renamed", "INTEGER NOT NULL DEFAULT 0"),
+    ("repos", "note", "TEXT NOT NULL DEFAULT ''"),
     ("builds", "failed_tests", "TEXT"),  # JSON [[section, label], ...] of the tests printed as failed
 ]
 

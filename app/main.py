@@ -439,7 +439,7 @@ def get_job(job_id: int, user: dict = Depends(require_auth)):
         )
         job["repos"] = db.rows(
             c,
-            "SELECT r.id, r.name, r.url, b.id AS build_id, b.status, b.score, b.exit_code, "
+            "SELECT r.id, r.name, r.url, r.note, b.id AS build_id, b.status, b.score, b.exit_code, "
             " b.commit_sha, b.queued_at, b.started_at, b.finished_at "
             "FROM repos r LEFT JOIN builds b ON b.id = (SELECT MAX(id) FROM builds WHERE repo_id=r.id) "
             "WHERE r.job_id=? ORDER BY r.name COLLATE NOCASE",
@@ -753,6 +753,20 @@ def rename_repo(repo_id: int, body: RepoPatch, user: dict = Depends(require_auth
     return {"ok": True}
 
 
+class NoteIn(BaseModel):
+    note: str = Field(default="", max_length=2000)
+
+
+@api.put("/repos/{repo_id}/note")
+def set_note(repo_id: int, body: NoteIn, user: dict = Depends(require_auth)):
+    """A free comment on a repository (oral defense remarks...). Anyone who can see the job may write it."""
+    guard_repo(repo_id, user)
+    with db.tx() as c:
+        get_or_404(c, "SELECT id FROM repos WHERE id=?", repo_id)
+        c.execute("UPDATE repos SET note=? WHERE id=?", body.note.strip(), repo_id)
+    return {"ok": True}
+
+
 @api.delete("/repos/{repo_id}")
 def delete_repo(repo_id: int, user: dict = Depends(require_auth)):
     guard_repo(repo_id, user, True)
@@ -891,11 +905,11 @@ def export_csv(job_id: int, user: dict = Depends(require_auth)):
     job = get_job(job_id, user)
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["name", "url", "status", "score", "exit_code", "commit", "finished_at"])
+    w.writerow(["name", "url", "status", "score", "exit_code", "commit", "finished_at", "note"])
     for r in job["repos"]:
         fin = datetime.fromtimestamp(r["finished_at"]).isoformat(timespec="seconds") if r["finished_at"] else ""
         w.writerow([r["name"], r["url"], r["status"] or "", r["score"] or "", r["exit_code"] if r["exit_code"] is not None else "",
-                    r["commit_sha"] or "", fin])
+                    r["commit_sha"] or "", fin, r["note"] or ""])
     safe = re.sub(r"[^\w.-]+", "_", job["name"]) or "job"
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="{safe}.csv"'})

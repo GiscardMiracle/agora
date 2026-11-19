@@ -442,3 +442,7 @@ body[data-access="shared"] .own { display: none !important; }
 .fails li { color: var(--ko); font-size: 12.5px; }
 .fail-table .bar { height: 4px; border-radius: 2px; background: var(--line); margin-top: 4px; min-width: 70px; overflow: hidden; }
 .fail-table .bar b { display: block; height: 100%; background: var(--ko); }
+
+/* repository notes */
+.note { display: flex; gap: 5px; align-items: center; color: var(--mute); font-size: 11.5px; max-width: 360px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.icon.has-note { color: var(--accent); }

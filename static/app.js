@@ -19,6 +19,7 @@ const ICONS = {
   job: '<path d="M8 4h8l4 4v12H8z"/><path d="M4 8v12h4"/>',
   play: '<path d="M7 5v14l12-7z"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
+  note: '<path d="M5 4h14v12l-4 4H5z"/><path d="M15 20v-4h4M8 9h8M8 13h4"/>',
   pencil: '<path d="M4 20h4L19 9l-4-4L4 16z"/>',
   trash: '<path d="M5 7h14M10 7V5h4v2M7 7l1 13h8l1-13"/>',
   down: '<path d="M12 4v11m-5-4 5 5 5-5M5 20h14"/>',
@@ -779,6 +780,7 @@ function tabRepos(job, el) {
     rows.innerHTML = list.map((r) => `
       <tr data-repo="${r.id}" ${r.build_id ? `data-build="${r.build_id}" class="clickable"` : ""}>
         <td><div class="who">${avatar(r.name)}<div><div class="name">${esc(r.name)}</div>
+          ${r.note ? `<div class="note" title="${esc(r.note)}">${ico("note", 12)} ${esc(r.note)}</div>` : ""}
           <a class="repo-url" href="${esc(r.url.startsWith("git@") ? "https://github.com/" + shortRepo(r.url) : r.url.replace(/\.git$/, ""))}" target="_blank" rel="noopener">${esc(shortRepo(r.url))}</a></div></div></td>
         <td>${badge(r.status)}</td>
         <td>${scoreCell(r.score)}</td>
@@ -789,6 +791,7 @@ function tabRepos(job, el) {
           ${isActive(r.status)
             ? `<button class="icon" data-act="cancel" title="cancel">${ico("stop", 15)}</button>`
             : `<button class="icon" data-act="run" title="run">${ico("play", 15)}</button>`}
+          <button class="icon ${r.note ? "has-note" : ""}" data-act="note" title="${r.note ? "edit note" : "add a note"}">${ico("note", 15)}</button>
           <button class="icon own" data-act="rename" title="rename">${ico("pencil", 15)}</button>
           <button class="icon danger own" data-act="del" title="delete">${ico("trash", 15)}</button>
         </td>
@@ -824,6 +827,11 @@ function tabRepos(job, el) {
         if (!ids.length) return toast("No repository shown");
         const { queued } = await api(`/jobs/${job.id}/run`, { method: "POST", json: { repo_ids: ids } });
         toast(`${queued} build(s) queued`, "ok");
+      } else if (act === "note") {
+        const r = repos.find((x) => x.id == tr.dataset.repo);
+        const note = prompt(`Note on ${r.name} (empty to remove):`, r.note || "");
+        if (note === null || note.trim() === (r.note || "")) return;
+        await api(`/repos/${r.id}/note`, { method: "PUT", json: { note: note.trim() } });
       } else if (act === "rename") {
         const r = repos.find((x) => x.id == tr.dataset.repo);
         const name = prompt("New name:", r.name);
