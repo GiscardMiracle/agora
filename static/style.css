@@ -435,7 +435,7 @@ body[data-access="shared"] .own { display: none !important; }
 .pick .muted { margin-left: auto; font-weight: 400; }
 
 /* failed tests */
-.fails { margin-top: 16px; }
+.fails, .stylebox { margin: 0 0 22px; }
 .fails .f-sec { margin-top: 8px; }
 .fails .f-sec ul { margin: 4px 0 0; padding-left: 18px; }
 .fails li { color: var(--ko); font-size: 12.5px; }
@@ -462,3 +462,14 @@ body[data-access="shared"] .own { display: none !important; }
 .sty b.maj:not(:empty) { color: var(--ko); }
 .sty .maj { background: color-mix(in srgb, var(--ko) 14%, transparent); }
 .sty .min { background: color-mix(in srgb, var(--mid) 16%, transparent); color: var(--mid); }
+
+/* coding style details */
+.sty.clean { color: var(--ok); font-weight: 600; }
+.sev { display: inline-block; font: 600 10.5px var(--mono); letter-spacing: .05em; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; background: var(--line); color: var(--mute); }
+.sev.major { color: var(--ko); background: color-mix(in srgb, var(--ko) 13%, transparent); }
+.sev.minor { color: var(--mid); background: color-mix(in srgb, var(--mid) 15%, transparent); }
+.stylebox summary { cursor: pointer; margin: 6px 0; color: var(--ink-2); }
+.sty-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+.sty-table td { padding: 4px 10px 4px 0; vertical-align: top; border-top: 1px solid var(--line); }
+.sty-table .loc { font-family: var(--mono); white-space: nowrap; color: var(--ink-2); }
+.sty-table .rule { font-family: var(--mono); color: var(--mute); white-space: nowrap; text-align: right; }

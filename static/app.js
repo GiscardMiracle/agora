@@ -649,7 +649,7 @@ async function viewJobs(dirEnc = "") {
 async function viewJob(id, tab = "repos") {
   const job = await api(`/jobs/${id}`);
   setNav(`<a href="#/">jobs</a> ${folderCrumbs(job.folder || "", false)} <span class="sep">/</span> <span class="crumb">${esc(job.name)}</span>`);
-  const tabs = [["repos", "Repositories", job.repos.length], ["failures", "Failures", null], ["similarity", "Similarity", null], ["files", "Test files", job.files.length]];
+  const tabs = [["repos", "Repositories", job.repos.length], ["failures", "Failures", null], ["style", "Style", null], ["similarity", "Similarity", null], ["files", "Test files", job.files.length]];
   document.body.dataset.access = job.access;
   if (canWrite() && job.access === "owner") tabs.push(["settings", "Settings", null]);
   const visibility = job.access === "shared"
@@ -676,6 +676,7 @@ async function viewJob(id, tab = "repos") {
   const el = document.getElementById("tab");
   if (tab === "files") return tabFiles(job, el);
   if (tab === "failures") return tabFailures(job, el);
+  if (tab === "style") return tabStyle(job, el);
   if (tab === "similarity") return tabSimilarity(job, el);
   if (tab === "settings" && canWrite() && job.access === "owner") return tabSettings(job, el);
   return tabRepos(job, el);
@@ -711,6 +712,7 @@ function renderStats(repos) {
 function styleCell(st) {
   if (typeof st === "string") { try { st = JSON.parse(st); } catch { st = null; } }
   if (!st) return "";
+  if (!st.major && !st.minor && !st.info) return `<span class="sty clean" title="coding style: no violation">✓ clean</span>`;
   return `<span class="sty" title="coding style: ${st.major} major, ${st.minor} minor, ${st.info} info">` +
     `<b class="maj">${st.major}</b><b class="min">${st.minor}</b><b class="inf">${st.info}</b></span>`;
 }
@@ -944,6 +946,25 @@ async function tabFailures(job, el) {
     }).join("")}</tbody></table></div>`;
 }
 
+async function tabStyle(job, el) {
+  const { checked, rules } = await api(`/jobs/${job.id}/style`);
+  if (!checked) {
+    el.innerHTML = `<p class="muted" style="padding:24px;text-align:center">No coding-style result yet.
+      A build counts once its log shows the checker running (<code>epiclang</code> or <code>banana-check-repo</code>): run the repositories first.</p>`;
+    return;
+  }
+  const dirty = new Set(rules.flatMap((r) => r.repos.map((x) => x.id))).size;
+  el.innerHTML = `<div class="muted small" style="margin:12px 0">${checked} repositories checked, ${checked - dirty} clean. Rules broken in the latest build of each one:</div>` + (rules.length
+    ? `<div class="tablewrap"><table class="repos fail-table"><thead><tr><th>Rule</th><th>Repositories</th><th>Who</th></tr></thead><tbody>
+      ${rules.map((g) => {
+        const pct = Math.round((100 * g.count) / checked);
+        return `<tr><td><span class="sev ${g.sev}">${g.sev}</span> <b>${esc(g.rule)}</b><div class="muted small">${esc(g.msg || "")}</div></td>
+          <td style="white-space:nowrap"><b>${g.count}</b> <span class="muted small">${pct}% · ${g.total} total</span><div class="bar"><b style="width:${pct}%"></b></div></td>
+          <td class="small">${g.repos.slice(0, 12).map((r) => `<a href="#/builds/${r.build_id}">${esc(r.name)}</a> <span class="muted">×${r.n}</span>`).join(", ")}${g.repos.length > 12 ? ` <span class="muted">+${g.repos.length - 12}</span>` : ""}</td></tr>`;
+      }).join("")}</tbody></table></div>`
+    : `<p class="muted" style="padding:24px;text-align:center">No violation at all.</p>`);
+}
+
 async function tabSimilarity(job, el) {
   const load = async (threshold) => {
     const { compared, pairs } = await api(`/jobs/${job.id}/similarity?threshold=${threshold}`);
@@ -1104,6 +1125,8 @@ function tabSettings(job, el) {
       <div class="eyebrow">sharing</div>
       <p class="muted small">New jobs are private: only you and the admins can see them. Pick who else can see this one.
         People you share with can browse results and launch builds with their own SSH key; only you can edit or delete the job.</p>
+      <div class="toolbar" style="margin:6px 0 2px"><button type="button" class="btn" id="share-all">select everyone</button>
+        <button type="button" class="btn" id="share-none">select no one</button></div>
       <div id="people" class="people muted small">loading…</div>
       <div class="toolbar"><button class="btn primary" id="saveshare" disabled>save sharing</button></div>
     </section>`;
@@ -1159,6 +1182,9 @@ function tabSettings(job, el) {
       || `<span class="muted small">No other users yet.</span>`;
     document.getElementById("saveshare").disabled = false;
   }).catch((err) => { if (!(err instanceof Unauthorized)) toast(err.message, "ko"); });
+  const setAll = (on) => document.querySelectorAll("#people input[type=checkbox]").forEach((i) => (i.checked = on));
+  document.getElementById("share-all").addEventListener("click", () => setAll(true));
+  document.getElementById("share-none").addEventListener("click", () => setAll(false));
   document.getElementById("saveshare").addEventListener("click", async () => {
     const ids = [...document.querySelectorAll("#people input:checked")].map((i) => +i.value);
     try {
@@ -1216,6 +1242,7 @@ async function viewBuild(id) {
       <button class="btn" data-go="${next?.build_id || ""}" ${next ? "" : "disabled"} title="next">${ico("fwd", 14)}</button>
     </section>
     <section class="card fails" id="fails" hidden></section>
+    <section class="card stylebox" id="stylebox" hidden></section>
     <div class="build">
       <div class="terminal">
         <div class="term-bar"><i></i><i></i><i></i><span>agora@sandbox: /work — build #${id} — ${esc(shortRepo(b.repo_url))}</span>
@@ -1261,6 +1288,16 @@ async function viewBuild(id) {
       for (const [sec, label] of list) (by.get(sec) || by.set(sec, []).get(sec)).push(label);
       fails.innerHTML = `<div class="eyebrow">${list.length} failed test${list.length > 1 ? "s" : ""}</div>` +
         [...by].map(([sec, labels]) => `<div class="f-sec"><b>${esc(sec || "tests")}</b><ul>${labels.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></div>`).join("");
+    }
+    const sbox = document.getElementById("stylebox"), items = x.style_items || [];
+    sbox.hidden = !x.style;
+    if (x.style) {
+      const n = items.length, total = x.style.major + x.style.minor + x.style.info;
+      sbox.innerHTML = `<div class="eyebrow">coding style · ${styleCell(x.style)}</div>` + (n
+        ? `<details ${n <= 15 ? "open" : ""}><summary>${total} violation${total > 1 ? "s" : ""}${n < total ? ` (first ${n} shown)` : ""}</summary>
+          <table class="sty-table"><tbody>${items.map((v) => `<tr><td><span class="sev ${v.sev}">${v.sev}</span></td>
+            <td class="loc">${esc(v.file)}:${v.line}${v.col ? ":" + v.col : ""}</td><td>${esc(v.msg || "")}</td><td class="rule">${esc(v.rule)}</td></tr>`).join("")}</tbody></table></details>`
+        : `<div class="muted small">The checker ran and found nothing.</div>`);
     }
   };
   renderMeta(b);
