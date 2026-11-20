@@ -407,6 +407,7 @@ class JobIn(BaseModel):
     memory_mb: int = Field(default=512, ge=64, le=4096)
     style_check: bool = True
     style_command: str = Field(default="", max_length=1000)
+    privileged: bool = False
 
 
 SCORE_FRAC = re.compile(r"(-?[\d.]+)\s*/\s*([\d.]+)")
@@ -468,16 +469,23 @@ def list_jobs(user: dict = Depends(require_auth)):
     return jobs
 
 
+def check_privileged(user: dict, wanted: bool, was: bool = False) -> None:
+    """Only an admin may switch a job to the privileged (root) sandbox."""
+    if wanted and not was and user["role"] != "admin":
+        raise HTTPException(403, "only an admin can enable the privileged sandbox")
+
+
 @api.post("/jobs")
 def create_job(body: JobIn, user: dict = Depends(require_auth)):
+    check_privileged(user, body.privileged)
     folder = clean_folder(body.folder)
     with db.tx() as c:
         ensure_folder(c, folder, user["id"])
         cur = c.execute(
-            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, style_check, style_command, folder, "
-            "owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, style_check, style_command, privileged, folder, "
+            "owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             body.name.strip(), body.description, body.image.strip(), body.command,
-            body.timeout, body.memory_mb, int(body.style_check), body.style_command.strip(), folder, user["id"], db.now(), db.now(),
+            body.timeout, body.memory_mb, int(body.style_check), body.style_command.strip(), int(body.privileged), folder, user["id"], db.now(), db.now(),
         )
         return {"id": cur.lastrowid}
 
@@ -509,13 +517,14 @@ def update_job(job_id: int, body: JobIn, user: dict = Depends(require_auth)):
     guard_job(job_id, user, True)
     folder = clean_folder(body.folder)
     with db.tx() as c:
-        get_or_404(c, "SELECT id FROM jobs WHERE id=?", job_id)
+        old = get_or_404(c, "SELECT privileged FROM jobs WHERE id=?", job_id)
+        check_privileged(user, body.privileged, bool(old["privileged"]))
         ensure_folder(c, folder, user["id"])
         c.execute(
-            "UPDATE jobs SET name=?, description=?, image=?, command=?, timeout=?, memory_mb=?, style_check=?, style_command=?, "
+            "UPDATE jobs SET name=?, description=?, image=?, command=?, timeout=?, memory_mb=?, style_check=?, style_command=?, privileged=?, "
             "folder=?, updated_at=? WHERE id=?",
             body.name.strip(), body.description, body.image.strip(), body.command,
-            body.timeout, body.memory_mb, int(body.style_check), body.style_command.strip(), folder, db.now(), job_id,
+            body.timeout, body.memory_mb, int(body.style_check), body.style_command.strip(), int(body.privileged), folder, db.now(), job_id,
         )
     return {"ok": True}
 
@@ -526,10 +535,10 @@ def duplicate_job(job_id: int, user: dict = Depends(require_auth)):
     with db.tx() as c:
         j = get_or_404(c, "SELECT * FROM jobs WHERE id=?", job_id)
         cur = c.execute(
-            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, style_check, style_command, folder, "
-            "owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO jobs (name, description, image, command, timeout, memory_mb, style_check, style_command, privileged, folder, "
+            "owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             f"{j['name']} (copy)", j["description"], j["image"], j["command"],
-            j["timeout"], j["memory_mb"], j["style_check"], j["style_command"], j["folder"], user["id"], db.now(), db.now(),
+            j["timeout"], j["memory_mb"], j["style_check"], j["style_command"], j["privileged"] if user["role"] == "admin" else 0, j["folder"], user["id"], db.now(), db.now(),
         )
         c.execute(
             "INSERT INTO job_files (job_id, name, content) SELECT ?, name, content FROM job_files WHERE job_id=?",

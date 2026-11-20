@@ -1120,6 +1120,8 @@ function tabSettings(job, el) {
       </div>
       <label class="pick" style="margin-top:6px"><input type="checkbox" name="style_check" ${job.style_check ? "checked" : ""}>
         <span>Check the coding style of every repository <span class="muted small">(runs <code>epiclang</code> on all the .c files before the tests, whatever the Makefile does)</span></span></label>
+      <label class="pick" style="margin-top:6px"><input type="checkbox" name="privileged" ${job.privileged ? "checked" : ""}>
+        <span>Privileged sandbox <span class="muted small">(the tests run as root in the container, with only the SETUID, SETGID, DAC_OVERRIDE, CHOWN, FOWNER and KILL capabilities, still without network. For projects such as my_sudo that must switch user)</span></span></label>
       <label>Style command <span class="muted small">(optional, runs in /work; its output is read like epiclang's. Empty = every .c file with <code>epiclang -fsyntax-only</code>)</span>
         <input name="style_command" value="${esc(job.style_command || "")}" placeholder="find . -name '*.c' | xargs epiclang -fsyntax-only -I include"></label>
       <div class="toolbar">
@@ -1223,7 +1225,7 @@ function tabSettings(job, el) {
       await api(`/jobs/${job.id}`, { method: "PUT", json: {
         name: f.name.value, description: f.description.value, folder: f.folder.value, command: f.command.value,
         image: f.image.value, timeout: +f.timeout.value, memory_mb: +f.memory_mb.value,
-        style_check: f.style_check.checked, style_command: f.style_command.value,
+        style_check: f.style_check.checked, style_command: f.style_command.value, privileged: f.privileged.checked,
       } });
       toast("Settings saved", "ok");
       route();

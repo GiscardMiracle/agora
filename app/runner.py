@@ -61,6 +61,11 @@ def remove_logs(build_ids) -> None:
         log_path(bid).unlink(missing_ok=True)
 
 
+# What a privileged job's container keeps (everything else is dropped): switch uid/gid, read and write any file,
+# own files, signal the processes it started under another uid.
+PRIV_CAPS = ("SETUID", "SETGID", "DAC_OVERRIDE", "CHOWN", "FOWNER", "KILL")
+
+
 def _rmtree(path: Path) -> None:
     if not path.exists():
         return
@@ -198,15 +203,21 @@ class Runner:
         return True
 
     @staticmethod
-    def _sandbox_args(name: str, b: dict, repo_dir: Path, tests_dir: Path, command: str, tty: bool) -> list[str]:
+    def _sandbox_args(name: str, b: dict, repo_dir: Path, tests_dir: Path, command: str, tty: bool,
+                      privileged: bool = False) -> list[str]:
         mem = f"{b['memory_mb']}m"
+        if privileged:
+            # Root inside the throw-away container, but only with the capabilities a "sudo" needs.
+            identity = ["--user", "0:0", *[a for cap in PRIV_CAPS for a in ("--cap-add", cap)]]
+        else:
+            identity = ["--user", f"{os.getuid()}:{os.getgid()}"]
         return [
             "docker", "run", "--rm", "--name", name, *(["-t"] if tty else []),
             "--network", "none",
             "--memory", mem, "--memory-swap", mem,
             "--cpus", "1", "--pids-limit", "256",
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-            "--user", f"{os.getuid()}:{os.getgid()}",
+            *identity,
             "--tmpfs", "/tmp:rw,exec,nosuid,size=256m",
             "-e", "HOME=/tmp", "-e", "TERM=xterm-256color",
             "-e", "AGORA_REPO=/work", "-e", "AGORA_TESTS=/tests",
@@ -214,6 +225,13 @@ class Runner:
             "-w", "/work",
             b["image"], "sh", "-c", f"exec </dev/null; {command}",
         ]
+
+    async def _reclaim(self, b: dict, work: Path) -> None:
+        """A root sandbox leaves root-owned files in the clone: give them back so the host can delete them."""
+        args = ["docker", "run", "--rm", "--network", "none", "--cap-drop", "ALL",
+                "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
+                "-v", f"{work}:/w", b["image"], "chown", "-R", f"{os.getuid()}:{os.getgid()}", "/w"]
+        await asyncio.to_thread(subprocess.run, args, capture_output=True, check=False, timeout=120)
 
     async def _style_step(self, b: dict, out: "LogWriter", repo_dir: Path, tests_dir: Path) -> None:
         """Run the coding-style checker on the clone, whatever the repository's Makefile does, so that every
@@ -291,7 +309,7 @@ class Runner:
             b = db.row(
                 c,
                 "SELECT b.id, b.job_id, b.repo_id, b.user_id, r.url, r.name AS repo_name, j.name AS job_name, "
-                "j.image, j.command, j.timeout, j.memory_mb, j.style_check, j.style_command "
+                "j.image, j.command, j.timeout, j.memory_mb, j.style_check, j.style_command, j.privileged "
                 "FROM builds b JOIN repos r ON r.id=b.repo_id JOIN jobs j ON j.id=b.job_id "
                 "WHERE b.status='queued' ORDER BY b.id LIMIT 1",
             )
@@ -427,7 +445,10 @@ class Runner:
             # 3. run in the sandbox
             name = container_name(bid)
             mem = f"{b['memory_mb']}m"
-            args = self._sandbox_args(name, b, repo_dir, tests_dir, b["command"], tty=True)
+            args = self._sandbox_args(name, b, repo_dir, tests_dir, b["command"], tty=True,
+                                      privileged=bool(b["privileged"]))
+            if b["privileged"]:
+                out.meta(f"{C_WARN}privileged sandbox: root with {', '.join(PRIV_CAPS)} only, still no network{C_RESET}")
 
             async def kill():
                 await asyncio.to_thread(
@@ -459,4 +480,6 @@ class Runner:
                              exit_code=rc, commit_sha=sha, score=out.score)
         finally:
             out.close()
+            if b.get("privileged"):
+                await self._reclaim(b, work)
             await asyncio.to_thread(_rmtree, work)
